@@ -103,4 +103,4 @@ Pull requests and issues are welcome! See [API.md](./API.md) for backend specs.
 ---
 
 ## 📄 License
-MIT 
+MIT
