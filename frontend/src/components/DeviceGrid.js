@@ -22,9 +22,12 @@ function DeviceGrid() {
   const [command, setCommand] = useState('reboot');
   const [parameters, setParameters] = useState('{}');
 
+  const API_URL = process.env.REACT_APP_API_URL;
+  console.log('API_URL:', API_URL);
+
   const fetchDevices = () => {
     setLoading(true);
-    fetch('http://localhost:5000/api/devices')
+    fetch(`${API_URL}/api/devices`)
       .then(res => res.json())
       .then(data => {
         setDevices(data);
@@ -37,7 +40,7 @@ function DeviceGrid() {
   }, []);
 
   const handleSendCommand = async () => {
-    await fetch(`http://localhost:5000/api/devices/${cmdDevice}/command`, {
+    await fetch(`${API_URL}/api/devices/${cmdDevice}/command`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ command, parameters: JSON.parse(parameters) }),

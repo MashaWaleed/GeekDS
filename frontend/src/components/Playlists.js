@@ -28,9 +28,11 @@ function Playlists() {
   const [name, setName] = useState('');
   const [selectedMedia, setSelectedMedia] = useState([]);
 
+  const API_URL = process.env.REACT_APP_API_URL;
+
   const fetchPlaylists = () => {
     setLoading(true);
-    fetch('http://localhost:5000/api/playlists')
+    fetch(`${API_URL}/api/playlists`)
       .then(res => res.json())
       .then(data => {
         setPlaylists(data);
@@ -38,7 +40,7 @@ function Playlists() {
       });
   };
   const fetchMedia = () => {
-    fetch('http://localhost:5000/api/media')
+    fetch(`${API_URL}/api/media`)
       .then(res => res.json())
       .then(data => setMedia(data));
   };
@@ -49,7 +51,7 @@ function Playlists() {
   }, []);
 
   const handleCreate = async () => {
-    await fetch('http://localhost:5000/api/playlists', {
+    await fetch(`${API_URL}/api/playlists`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name, media_files: selectedMedia }),
@@ -61,7 +63,7 @@ function Playlists() {
   };
 
   const handleDelete = async (id) => {
-    await fetch(`http://localhost:5000/api/playlists/${id}`, { method: 'DELETE' });
+    await fetch(`${API_URL}/api/playlists/${id}`, { method: 'DELETE' });
     fetchPlaylists();
   };
 

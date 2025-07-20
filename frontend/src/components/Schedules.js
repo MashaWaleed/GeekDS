@@ -31,9 +31,11 @@ function Schedules() {
   const [endTime, setEndTime] = useState('');
   const [repeat, setRepeat] = useState('');
 
+  const API_URL = process.env.REACT_APP_API_URL;
+
   const fetchSchedules = () => {
     setLoading(true);
-    fetch('http://localhost:5000/api/schedules')
+    fetch(`${API_URL}/api/schedules`)
       .then(res => res.json())
       .then(data => {
         setSchedules(data);
@@ -41,12 +43,12 @@ function Schedules() {
       });
   };
   const fetchDevices = () => {
-    fetch('http://localhost:5000/api/devices')
+    fetch(`${API_URL}/api/devices`)
       .then(res => res.json())
       .then(data => setDevices(data));
   };
   const fetchPlaylists = () => {
-    fetch('http://localhost:5000/api/playlists')
+    fetch(`${API_URL}/api/playlists`)
       .then(res => res.json())
       .then(data => setPlaylists(data));
   };
@@ -58,7 +60,7 @@ function Schedules() {
   }, []);
 
   const handleCreate = async () => {
-    await fetch('http://localhost:5000/api/schedules', {
+    await fetch(`${API_URL}/api/schedules`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -79,7 +81,7 @@ function Schedules() {
   };
 
   const handleDelete = async (id) => {
-    await fetch(`http://localhost:5000/api/schedules/${id}`, { method: 'DELETE' });
+    await fetch(`${API_URL}/api/schedules/${id}`, { method: 'DELETE' });
     fetchSchedules();
   };
 

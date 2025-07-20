@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS devices (
 CREATE TABLE IF NOT EXISTS media_files (
   id SERIAL PRIMARY KEY,
   filename TEXT NOT NULL,
+  saved_filename TEXT,
   type TEXT,
   duration INTEGER,
   upload_date TIMESTAMP NOT NULL DEFAULT NOW()

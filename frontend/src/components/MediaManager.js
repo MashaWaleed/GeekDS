@@ -19,10 +19,11 @@ function MediaManager() {
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const fileInput = useRef();
+  const API_URL = process.env.REACT_APP_API_URL;
 
   const fetchMedia = () => {
     setLoading(true);
-    fetch('http://localhost:5000/api/media')
+    fetch(`${API_URL}/api/media`)
       .then(res => res.json())
       .then(data => {
         setMedia(data);
@@ -40,7 +41,7 @@ function MediaManager() {
     setUploading(true);
     const formData = new FormData();
     formData.append('file', file);
-    await fetch('http://localhost:5000/api/media', {
+    await fetch(`${API_URL}/api/media`, {
       method: 'POST',
       body: formData,
     });
@@ -49,7 +50,7 @@ function MediaManager() {
   };
 
   const handleDelete = async (id) => {
-    await fetch(`http://localhost:5000/api/media/${id}`, { method: 'DELETE' });
+    await fetch(`${API_URL}/api/media/${id}`, { method: 'DELETE' });
     fetchMedia();
   };
 

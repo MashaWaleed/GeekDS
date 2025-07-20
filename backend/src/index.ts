@@ -25,7 +25,7 @@ app.use('/api/devices', devicesRouter);
 app.use('/api/devices', commandsRouter);
 app.use('/media', express.static(path.join(__dirname, '../media')));
 
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
+const PORT = parseInt(process.env.PORT || '5000', 10);
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`Backend running on port ${PORT}`);
 }); 
