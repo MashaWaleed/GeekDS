@@ -9,21 +9,39 @@ const upload = multer({ dest: path.join(__dirname, '../media') });
 
 // List all media files
 router.get('/', async (req, res) => {
-  const result = await pool.query('SELECT * FROM media_files ORDER BY upload_date DESC');
-  res.json(result.rows);
+  try {
+    const result = await pool.query(`
+      SELECT m.*, f.name as folder_name 
+      FROM media_files m
+      LEFT JOIN folders f ON m.folder_id = f.id
+      ORDER BY m.upload_date DESC
+    `);
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Error fetching media files:', error);
+    res.status(500).json({ error: 'Failed to fetch media files' });
+  }
 });
 
 // Upload a new media file
 router.post('/', upload.single('file'), async (req, res) => {
-  const file = (req as any).file;
-  if (!file) return res.status(400).json({ error: 'No file uploaded' });
-  const { originalname, filename, mimetype, size } = file;
-  // Save both the original filename and the saved (random) filename
-  const result = await pool.query(
-    'INSERT INTO media_files (filename, saved_filename, type, duration) VALUES ($1, $2, $3, $4) RETURNING *',
-    [originalname, filename, mimetype, 0] // Duration can be updated later
-  );
-  res.status(201).json(result.rows[0]);
+  try {
+    const file = (req as any).file;
+    if (!file) return res.status(400).json({ error: 'No file uploaded' });
+    
+    const { originalname, filename, mimetype, size } = file;
+    const { folder_id } = req.body; // Get folder_id from form data
+    
+    // Save both the original filename and the saved (random) filename
+    const result = await pool.query(
+      'INSERT INTO media_files (filename, saved_filename, type, duration, folder_id) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+      [originalname, filename, mimetype, 0, folder_id || null] // Duration can be updated later
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (error) {
+    console.error('Error uploading media file:', error);
+    res.status(500).json({ error: 'Failed to upload media file' });
+  }
 });
 
 // Serve a media file by original filename

@@ -28,6 +28,7 @@
 }
 ```
 - **Response:** Updated device object
+- **Note:** Devices are automatically marked offline if no heartbeat received within 3 minutes
 
 ### Send Command to Device
 - **POST** `/api/devices/:id/command`
@@ -72,7 +73,16 @@
 
 ### List Playlists
 - **GET** `/api/playlists`
-- **Response:** Array of playlist objects
+- **Response:** Array of playlist objects with versioning
+```json
+[
+  {
+    "id": 1,
+    "name": "Morning Ads",
+    "updated_at": "2024-07-25T13:45:30.123Z"
+  }
+]
+```
 
 ### Create Playlist
 - **POST** `/api/playlists`
@@ -87,7 +97,24 @@
 
 ### Get Playlist Details
 - **GET** `/api/playlists/:id`
-- **Response:** Playlist object with media_files
+- **Response:** Playlist object with media files and versioning
+```json
+{
+  "id": 1,
+  "name": "Morning Ads",
+  "updated_at": "2024-07-25T13:45:30.123Z",
+  "media_files": [1, 2, 3],
+  "media_details": [
+    {
+      "id": 1,
+      "filename": "video1.mp4",
+      "saved_filename": "abc123.mp4",
+      "type": "video/mp4",
+      "duration": 30
+    }
+  ]
+}
+```
 
 ### Update Playlist
 - **PATCH** `/api/playlists/:id`
@@ -110,7 +137,20 @@
 
 ### List Schedules
 - **GET** `/api/schedules`
-- **Response:** Array of schedule objects
+- **Response:** Array of schedule objects with versioning
+```json
+[
+  {
+    "id": 1,
+    "device_id": 1,
+    "playlist_id": 1,
+    "start_time": "2024-07-25T09:00:00Z",
+    "end_time": "2024-07-25T12:00:00Z",
+    "repeat": "daily",
+    "updated_at": "2024-07-25T13:45:30.123Z"
+  }
+]
+```
 
 ### Create Schedule
 - **POST** `/api/schedules`

@@ -6,6 +6,7 @@ import mediaRouter from './media';
 import playlistsRouter from './playlists';
 import schedulesRouter from './schedules';
 import commandsRouter from './commands';
+import foldersRouter from './folders';
 import path from 'path';
 
 dotenv.config();
@@ -23,6 +24,7 @@ app.use('/api/playlists', playlistsRouter);
 app.use('/api/schedules', schedulesRouter);
 app.use('/api/devices', devicesRouter);
 app.use('/api/devices', commandsRouter);
+app.use('/api/folders', foldersRouter);
 app.use('/media', express.static(path.join(__dirname, '../media')));
 
 const PORT = parseInt(process.env.PORT || '5000', 10);
