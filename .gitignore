@@ -13,10 +13,10 @@ media/
 # DB
 *.sqlite
 
-# Env
-.env
-backend/.env
-frontend/.env
+# # Env
+# .env
+# backend/.env
+# frontend/.env
 
 # Docker
 db_data/ 
