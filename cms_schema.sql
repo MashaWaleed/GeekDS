@@ -17,6 +17,22 @@ SET client_min_messages = warning;
 SET row_security = off;
 
 --
+-- Name: update_folder_timestamp(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.update_folder_timestamp() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$;
+
+
+ALTER FUNCTION public.update_folder_timestamp() OWNER TO postgres;
+
+--
 -- Name: update_playlist_timestamp(); Type: FUNCTION; Schema: public; Owner: postgres
 --
 
@@ -136,6 +152,45 @@ ALTER SEQUENCE public.devices_id_seq OWNED BY public.devices.id;
 
 
 --
+-- Name: folders; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.folders (
+    id integer NOT NULL,
+    name text NOT NULL,
+    type text NOT NULL,
+    parent_id integer,
+    created_at timestamp without time zone DEFAULT now(),
+    updated_at timestamp without time zone DEFAULT now(),
+    CONSTRAINT folders_type_check CHECK ((type = ANY (ARRAY['media'::text, 'playlist'::text])))
+);
+
+
+ALTER TABLE public.folders OWNER TO postgres;
+
+--
+-- Name: folders_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.folders_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE public.folders_id_seq OWNER TO postgres;
+
+--
+-- Name: folders_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.folders_id_seq OWNED BY public.folders.id;
+
+
+--
 -- Name: media_files; Type: TABLE; Schema: public; Owner: postgres
 --
 
@@ -145,7 +200,8 @@ CREATE TABLE public.media_files (
     duration integer,
     type text,
     upload_date timestamp without time zone DEFAULT now() NOT NULL,
-    saved_filename text
+    saved_filename text,
+    folder_id integer
 );
 
 
@@ -193,7 +249,8 @@ ALTER TABLE public.playlist_media OWNER TO postgres;
 CREATE TABLE public.playlists (
     id integer NOT NULL,
     name text NOT NULL,
-    updated_at timestamp without time zone DEFAULT now()
+    updated_at timestamp without time zone DEFAULT now(),
+    folder_id integer
 );
 
 
@@ -281,6 +338,13 @@ ALTER TABLE ONLY public.devices ALTER COLUMN id SET DEFAULT nextval('public.devi
 
 
 --
+-- Name: folders id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.folders ALTER COLUMN id SET DEFAULT nextval('public.folders_id_seq'::regclass);
+
+
+--
 -- Name: media_files id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
@@ -318,6 +382,14 @@ ALTER TABLE ONLY public.devices
 
 
 --
+-- Name: folders folders_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.folders
+    ADD CONSTRAINT folders_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: media_files media_files_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -350,6 +422,41 @@ ALTER TABLE ONLY public.schedules
 
 
 --
+-- Name: idx_folders_parent; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_folders_parent ON public.folders USING btree (parent_id);
+
+
+--
+-- Name: idx_folders_type; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_folders_type ON public.folders USING btree (type);
+
+
+--
+-- Name: idx_media_files_folder; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_media_files_folder ON public.media_files USING btree (folder_id);
+
+
+--
+-- Name: idx_playlists_folder; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_playlists_folder ON public.playlists USING btree (folder_id);
+
+
+--
+-- Name: folders update_folders_updated_at; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER update_folders_updated_at BEFORE UPDATE ON public.folders FOR EACH ROW EXECUTE FUNCTION public.update_folder_timestamp();
+
+
+--
 -- Name: playlist_media update_playlists_on_media_change; Type: TRIGGER; Schema: public; Owner: postgres
 --
 
@@ -379,6 +486,22 @@ ALTER TABLE ONLY public.device_commands
 
 
 --
+-- Name: folders folders_parent_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.folders
+    ADD CONSTRAINT folders_parent_id_fkey FOREIGN KEY (parent_id) REFERENCES public.folders(id) ON DELETE CASCADE;
+
+
+--
+-- Name: media_files media_files_folder_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.media_files
+    ADD CONSTRAINT media_files_folder_id_fkey FOREIGN KEY (folder_id) REFERENCES public.folders(id) ON DELETE SET NULL;
+
+
+--
 -- Name: playlist_media playlist_media_media_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -392,6 +515,14 @@ ALTER TABLE ONLY public.playlist_media
 
 ALTER TABLE ONLY public.playlist_media
     ADD CONSTRAINT playlist_media_playlist_id_fkey FOREIGN KEY (playlist_id) REFERENCES public.playlists(id) ON DELETE CASCADE;
+
+
+--
+-- Name: playlists playlists_folder_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.playlists
+    ADD CONSTRAINT playlists_folder_id_fkey FOREIGN KEY (folder_id) REFERENCES public.folders(id) ON DELETE SET NULL;
 
 
 --
