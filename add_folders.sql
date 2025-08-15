@@ -33,7 +33,9 @@ BEGIN
 END;
 $$;
 
-CREATE TRIGGER IF NOT EXISTS update_folders_updated_at 
+-- Drop trigger if it exists, then create it
+DROP TRIGGER IF EXISTS update_folders_updated_at ON folders;
+CREATE TRIGGER update_folders_updated_at 
     BEFORE UPDATE ON folders 
     FOR EACH ROW 
     EXECUTE FUNCTION update_folder_timestamp();
