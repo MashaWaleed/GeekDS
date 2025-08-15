@@ -33,7 +33,7 @@ BEGIN
 END;
 $$;
 
-CREATE TRIGGER update_folders_updated_at 
+CREATE TRIGGER IF NOT EXISTS update_folders_updated_at 
     BEFORE UPDATE ON folders 
     FOR EACH ROW 
     EXECUTE FUNCTION update_folder_timestamp();
