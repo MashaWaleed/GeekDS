@@ -18,6 +18,7 @@ import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.io.InputStream
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.common.MediaItem
 import androidx.media3.ui.PlayerView
@@ -45,8 +46,8 @@ import android.provider.Settings
 import java.util.concurrent.TimeUnit
 
 class MainActivity : Activity() {
-    private var deviceName: String = "GeekDS Device" // Default fallback
-    private var cmsUrl: String = "http://192.168.1.10:5000" // Default fallback
+    private var deviceName: String = "ARC-A-GR-18" // Default fallback
+    private var cmsUrl: String = "http://192.168.1.212:5000" // Default fallback
     private var deviceId: Int? = null
 
     // Enhanced OkHttpClient with longer timeouts and retry
@@ -73,8 +74,10 @@ class MainActivity : Activity() {
     private var lastSuccessfulConnection: Long = 0
     private var connectionFailureCount = 0
     private var isNetworkAvailable = false
-    private var isRetryInProgress = false
-    private val retryLock = Any()
+    
+    // Add timing for log throttling
+    private var lastScheduleLogTime = 0L
+    private var lastPlaylistLogTime = 0L
 
 
     // State machine
@@ -204,20 +207,16 @@ class MainActivity : Activity() {
                 override fun onAvailable(network: Network) {
                     Log.i("GeekDS", "*** NETWORK AVAILABLE ***")
                     isNetworkAvailable = true
-                    
-                    // Don't immediately reset failure count - let normal operations handle it
-                    // connectionFailureCount = 0
+                    connectionFailureCount = 0
                     lastSuccessfulConnection = System.currentTimeMillis()
 
-                    // Restart background tasks when network comes back - but with delay and coordination
+                    // Restart background tasks when network comes back
                     handler.postDelayed({
-                        synchronized(retryLock) {
-                            if (deviceId != null && !isRetryInProgress) {
-                                Log.i("GeekDS", "Network restored - attempting sync")
-                                syncScheduleAndMedia()
-                            }
+                        if (deviceId != null) {
+                            Log.i("GeekDS", "Network restored - restarting sync")
+                            syncScheduleAndMedia()
                         }
-                    }, 5000) // Wait 5 seconds for network to stabilize
+                    }, 2000) // Wait 2 seconds for network to stabilize
                 }
 
                 override fun onLost(network: Network) {
@@ -278,58 +277,43 @@ class MainActivity : Activity() {
         }
     }
 
-    // Enhanced error handling with proper coordination
+    // Enhanced error handling with automatic recovery
+    // Add this property to your MainActivity class
     private var lastRecoveryAttempt = 0L
-    private val RECOVERY_COOLDOWN = 300_000L // 5 minutes between recovery attempts
-    private var isRetryInProgress = false
-    private val retryLock = Any()
+    private val RECOVERY_COOLDOWN = 60_000L // 60 seconds between recovery attempts
 
+    // Replace your current handleConnectionError method with this:
     private fun handleConnectionError(operation: String, error: Throwable) {
-        synchronized(retryLock) {
-            // Prevent multiple retry operations from interfering
-            if (isRetryInProgress) {
-                Log.w("GeekDS", "Retry already in progress for $operation, skipping")
-                return
-            }
+        connectionFailureCount++
+        val timeSinceLastSuccess = System.currentTimeMillis() - lastSuccessfulConnection
 
-            connectionFailureCount++
-            val timeSinceLastSuccess = System.currentTimeMillis() - lastSuccessfulConnection
+        Log.e("GeekDS", "Connection error in $operation (failure #$connectionFailureCount): $error")
+        Log.e("GeekDS", "Time since last successful connection: ${timeSinceLastSuccess / 1000}s")
 
-            Log.e("GeekDS", "Connection error in $operation (failure #$connectionFailureCount): $error")
-            Log.e("GeekDS", "Time since last successful connection: ${timeSinceLastSuccess / 1000}s")
+        setState(State.ERROR, "$operation failed (attempt $connectionFailureCount)")
 
-            setState(State.ERROR, "$operation failed (attempt $connectionFailureCount)")
-
-            // Only attempt recovery if failures are significant and enough time has passed
-            val now = System.currentTimeMillis()
-            if (connectionFailureCount >= 10 && (now - lastRecoveryAttempt) > RECOVERY_COOLDOWN) {
-                Log.w("GeekDS", "*** ATTEMPTING CONNECTION RECOVERY ***")
-                lastRecoveryAttempt = now
-                attemptConnectionRecovery()
-                return // Don't schedule individual retry
-            }
-
-            // Progressive backoff with maximum delay of 5 minutes
-            val backoffTime = minOf(60_000L * (connectionFailureCount / 3), 300_000L)
-            Log.i("GeekDS", "Will retry in ${backoffTime / 1000}s")
-
-            isRetryInProgress = true
-            handler.postDelayed({
-                synchronized(retryLock) {
-                    isRetryInProgress = false
-                    if (isNetworkConnected()) {
-                        Log.i("GeekDS", "Retrying $operation after backoff")
-                        when (operation) {
-                            "registration" -> registerDevice()
-                            "heartbeat" -> sendHeartbeat()
-                            "sync" -> syncScheduleAndMedia()
-                        }
-                    } else {
-                        Log.w("GeekDS", "Network still unavailable, skipping retry")
-                    }
-                }
-            }, backoffTime)
+        // THROTTLE RECOVERY ATTEMPTS
+        val now = System.currentTimeMillis()
+        if (connectionFailureCount >= 5 && (now - lastRecoveryAttempt) > RECOVERY_COOLDOWN) {
+            Log.w("GeekDS", "*** ATTEMPTING CONNECTION RECOVERY ***")
+            lastRecoveryAttempt = now
+            attemptConnectionRecovery()
         }
+
+        // Simple backoff - cap at 2 minutes
+        val backoffTime = minOf(30_000L * connectionFailureCount, 120_000L)
+        Log.i("GeekDS", "Will retry in ${backoffTime / 1000}s")
+
+        handler.postDelayed({
+            if (isNetworkConnected()) {
+                Log.i("GeekDS", "Retrying $operation after backoff")
+                when (operation) {
+                    "registration" -> registerDevice()
+                    "heartbeat" -> sendHeartbeat()
+                    "sync" -> syncScheduleAndMedia()
+                }
+            }
+        }, backoffTime)
     }
 
     private fun attemptConnectionRecovery() {
@@ -342,14 +326,14 @@ class MainActivity : Activity() {
                     setupWakeLock()
                 }
 
-                // Wait longer for things to settle
-                delay(10000)
+                // Wait a bit for things to settle
+                delay(5000)
 
                 // Check if we can reach the server
                 if (isNetworkConnected()) {
                     Log.i("GeekDS", "Network appears available, attempting to reconnect")
 
-                    // Reset failure count and try again - but don't reset retry state
+                    // Reset failure count and try again
                     connectionFailureCount = 0
 
                     // Re-register if needed
@@ -438,13 +422,8 @@ class MainActivity : Activity() {
                     val obj = JSONObject(resp)
                     deviceId = obj.getInt("id")
                     saveDeviceId(deviceId!!)
-                    
-                    // Reset retry state on successful registration
-                    synchronized(retryLock) {
-                        lastSuccessfulConnection = System.currentTimeMillis()
-                        connectionFailureCount = 0
-                        isRetryInProgress = false
-                    }
+                    lastSuccessfulConnection = System.currentTimeMillis()
+                    connectionFailureCount = 0
                     setState(State.IDLE, "Registered as device $deviceId")
                     startBackgroundTasks()
                 } catch (e: Exception) {
@@ -454,89 +433,84 @@ class MainActivity : Activity() {
         })
     }
 
-    // Updated startBackgroundTasks with better coordination
+    // Updated startBackgroundTasks to add debug info
     private fun startBackgroundTasks() {
         // Cancel any existing jobs
         scope.coroutineContext.cancelChildren()
         scheduleEnforcerJob?.cancel()
 
-        Log.i("GeekDS", "Starting coordinated background tasks")
+        Log.i("GeekDS", "Starting resilient background tasks")
 
         // Add initial debug info
         handler.postDelayed({
             debugScheduleInfo()
         }, 3000)
 
-        // Heartbeat every 3 minutes with network and state checking
+        // Heartbeat every 2 minutes with network checking
         scope.launch {
             while (isActive) {
                 try {
-                    delay(3 * 60 * 1000L) // Wait first, then check
-                    synchronized(retryLock) {
-                        if (isNetworkConnected() && !isRetryInProgress && state != State.ERROR) {
-                            sendHeartbeat()
-                        } else {
-                            Log.d("GeekDS", "Skipping heartbeat - network=${isNetworkConnected()}, retrying=$isRetryInProgress, state=$state")
-                        }
+                    if (isNetworkConnected()) {
+                        sendHeartbeat()
+                    } else {
+                        Log.w("GeekDS", "Skipping heartbeat - no network")
                     }
                 } catch (e: Exception) {
                     Log.e("GeekDS", "Error in heartbeat loop", e)
                 }
+                delay(2 * 60 * 1000L)
             }
         }
 
-        // Schedule/playlist sync every 2 minutes with network and state checking
+        // Schedule/playlist sync every 1 minute with network checking
         scope.launch {
             while (isActive) {
                 try {
-                    delay(2 * 60 * 1000L) // Wait first, then check
-                    synchronized(retryLock) {
-                        if (isNetworkConnected() && !isRetryInProgress && state != State.ERROR) {
-                            syncScheduleAndMedia()
-                        } else {
-                            Log.d("GeekDS", "Skipping sync - network=${isNetworkConnected()}, retrying=$isRetryInProgress, state=$state")
-                        }
+                    if (isNetworkConnected()) {
+                        syncScheduleAndMedia()
+                    } else {
+                        Log.w("GeekDS", "Skipping sync - no network")
                     }
                 } catch (e: Exception) {
                     Log.e("GeekDS", "Error in sync loop", e)
                 }
+                delay(1 * 60 * 1000L)
             }
         }
 
-        // Command polling every 60 seconds with network and state checking
+        // Command polling every 30 seconds with network checking
         scope.launch {
             while (isActive) {
                 try {
-                    delay(60 * 1000L) // Wait first, then check
-                    synchronized(retryLock) {
-                        if (isNetworkConnected() && !isRetryInProgress && state != State.ERROR) {
-                            pollCommands()
-                        }
+                    if (isNetworkConnected()) {
+                        pollCommands()
                     }
                 } catch (e: Exception) {
                     Log.e("GeekDS", "Error in command polling", e)
                 }
+                delay(30 * 1000L)
             }
         }
 
-        // Schedule enforcement: check every second (no network needed)
+        // Schedule enforcement: check every 5 seconds (no network needed)
+        // Wait a bit before starting to allow initial sync to complete
         scheduleEnforcerJob = scope.launch {
+            delay(10000L) // Wait 10 seconds for initial sync
             while (isActive) {
                 try {
                     enforceSchedule()
-                    delay(1000L)
                 } catch (e: Exception) {
                     Log.e("GeekDS", "Error in schedule enforcement", e)
-                    delay(5000L) // Wait longer on error
                 }
+                delay(5000L) // Check every 5 seconds instead of every second
             }
         }
 
-        // Wake lock renewal every 10 minutes
+        // Wake lock renewal every 5 minutes
         scope.launch {
             while (isActive) {
                 try {
-                    delay(10 * 60 * 1000L)
+                    delay(5 * 60 * 1000L)
                     if (wakeLock?.isHeld != true) {
                         Log.w("GeekDS", "Wake lock lost, re-acquiring")
                         setupWakeLock()
@@ -616,12 +590,8 @@ class MainActivity : Activity() {
                 if (!response.isSuccessful) {
                     handleConnectionError("heartbeat", Exception("HTTP ${response.code}"))
                 } else {
-                    // Reset retry state on successful heartbeat
-                    synchronized(retryLock) {
-                        lastSuccessfulConnection = System.currentTimeMillis()
-                        connectionFailureCount = 0
-                        isRetryInProgress = false
-                    }
+                    lastSuccessfulConnection = System.currentTimeMillis()
+                    connectionFailureCount = 0
                     setState(State.IDLE, "Heartbeat sent for device $id (name: $deviceName, ip: $currentIp)")
                     Log.d("GeekDS", "Heartbeat sent with updated device info - name: '$deviceName', ip: '$currentIp'")
                 }
@@ -653,12 +623,8 @@ class MainActivity : Activity() {
                 }
 
                 try {
-                    // Reset retry state on successful sync
-                    synchronized(retryLock) {
-                        lastSuccessfulConnection = System.currentTimeMillis()
-                        connectionFailureCount = 0
-                        isRetryInProgress = false
-                    }
+                    lastSuccessfulConnection = System.currentTimeMillis()
+                    connectionFailureCount = 0
 
                     val resp = response.body?.string()
                     val arr = JSONArray(resp)
@@ -741,8 +707,10 @@ class MainActivity : Activity() {
                                 if (playlistChanged) Log.i("GeekDS", "Playlist content changed")
                                 if (playlistSwitched) Log.i("GeekDS", "Different playlist assigned")
 
-                                // Only update schedule timestamp now
+                                // Update timestamps before fetching
                                 lastScheduleTimestamp = scheduleTimestamp
+                                lastPlaylistTimestamp = playlistTimestamp
+                                
                                 val playlistId = activeSchedule.getInt("playlist_id")
 
                                 val schedule = Schedule(
@@ -758,12 +726,13 @@ class MainActivity : Activity() {
                                 )
                                 saveSchedule(this@MainActivity, schedule)
 
-                                // Store current playlist info for the fetch callback
-                                val pendingPlaylistId = playlistId
-                                val pendingPlaylistTimestamp = playlistTimestamp
-
-                                // Always fetch when playlist changes or switches
-                                fetchPlaylist(playlistId)
+                                // Only fetch playlist if it actually changed or switched
+                                if (playlistChanged || playlistSwitched) {
+                                    fetchPlaylist(playlistId)
+                                } else {
+                                    // Schedule changed but playlist is the same - no need to restart playback
+                                    setState(State.IDLE, "Schedule updated, playlist unchanged")
+                                }
                             } else {
                                 Log.i("GeekDS", "Schedule unchanged")
                                 setState(State.IDLE, "Schedule up to date")
@@ -1004,19 +973,11 @@ class MainActivity : Activity() {
                 val playlist = Playlist(id = playlistId, mediaFiles = mediaFiles)
                 savePlaylist(this@MainActivity, playlist)
 
-                // Download media and restart playback
+                // Download media - the download process will handle starting playback when ready
                 Log.i("GeekDS", "Starting media download for playlist $playlistId with ${mediaFiles.size} files")
                 downloadPlaylistMedia(playlist)
 
-                // If this was the currently playing playlist, restart playback
-                if (isCurrentPlaylist) {
-                    Log.i("GeekDS", "Restarting playback with updated playlist")
-                    runOnUiThread {
-                        startPlaylistPlayback(playlist)
-                    }
-                }
-
-                setState(State.IDLE, "Media synced. Ready to play!")
+                setState(State.IDLE, "Media synced. Downloading files...")
             }
         })
     }
@@ -1031,7 +992,23 @@ class MainActivity : Activity() {
             return
         }
 
-        playlist.mediaFiles.forEach { mediaFile ->
+        // Track which files we're downloading vs already have
+        val filesToDownload = playlist.mediaFiles.filter { mediaFile ->
+            val file = File(getExternalFilesDir(null), mediaFile.filename)
+            !file.exists() || file.length() == 0L
+        }
+
+        if (filesToDownload.isEmpty()) {
+            Log.i("GeekDS", "All files already downloaded, ready to play")
+            setState(State.IDLE, "All media files ready")
+            // All files are ready, we can start playback immediately if needed
+            triggerPlaybackIfReady(playlist)
+            return
+        }
+
+        Log.i("GeekDS", "Need to download ${filesToDownload.size} files")
+
+        filesToDownload.forEach { mediaFile ->
             downloadMediaWithCallback(mediaFile.filename) { success ->
                 downloadCount++
                 if (success) {
@@ -1040,21 +1017,38 @@ class MainActivity : Activity() {
                     Log.e("GeekDS", "Failed to download: ${mediaFile.filename}")
                 }
 
-                if (downloadCount == totalFiles) {
-                    setState(State.IDLE, "All media files processed ($downloadCount/$totalFiles)")
+                if (downloadCount == filesToDownload.size) {
+                    setState(State.IDLE, "All media files processed ($downloadCount/${filesToDownload.size})")
+                    // All downloads complete, now we can safely start playback
+                    triggerPlaybackIfReady(playlist)
                 }
             }
         }
     }
 
-    // Updated download function with callback
+    // New method to trigger playback only when files are ready
+    private fun triggerPlaybackIfReady(playlist: Playlist) {
+        // Only start playback if we should be playing right now
+        if (isPlaylistActive && currentPlaylistId == playlist.id) {
+            Log.i("GeekDS", "Downloads complete - starting playback")
+            runOnUiThread {
+                startPlaylistPlayback(playlist)
+            }
+        } else {
+            Log.i("GeekDS", "Downloads complete but playback not currently needed")
+        }
+    }
+
+    // Updated download function with callback and proper file completion detection
     private fun downloadMediaWithCallback(filename: String, callback: (Boolean) -> Unit) {
         val file = File(getExternalFilesDir(null), filename)
-        if (file.exists()) {
-            callback(true) // Already exists
+        if (file.exists() && file.length() > 0) {
+            Log.i("GeekDS", "File already exists: $filename (${file.length()} bytes)")
+            callback(true) // Already exists and has content
             return
         }
 
+        Log.i("GeekDS", "Starting download: $filename")
         val req = Request.Builder()
             .url("$cmsUrl/api/media/$filename")
             .get()
@@ -1072,12 +1066,61 @@ class MainActivity : Activity() {
                     return
                 }
                 try {
-                    val sink = FileOutputStream(file)
-                    response.body?.byteStream()?.copyTo(sink)
+                    val responseBody = response.body
+                    if (responseBody == null) {
+                        Log.e("GeekDS", "Download failed: $filename - no response body")
+                        callback(false)
+                        return
+                    }
+
+                    // Write to a temporary file first
+                    val tempFile = File(file.parent, "${filename}.tmp")
+                    val sink = FileOutputStream(tempFile)
+                    
+                    val inputStream = responseBody.byteStream()
+                    val buffer = ByteArray(8192)
+                    var bytesRead: Int
+                    var totalBytes = 0L
+                    
+                    while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                        sink.write(buffer, 0, bytesRead)
+                        totalBytes += bytesRead
+                    }
+                    
+                    // Ensure all data is written and flushed
+                    sink.flush()
                     sink.close()
-                    callback(true)
+                    inputStream.close()
+                    
+                    // Verify the download completed successfully
+                    if (tempFile.exists() && tempFile.length() > 0) {
+                        // Move temp file to final location
+                        if (tempFile.renameTo(file)) {
+                            Log.i("GeekDS", "Download completed: $filename (${totalBytes} bytes)")
+                            
+                            // Double-check the final file
+                            if (file.exists() && file.length() == totalBytes && file.canRead()) {
+                                callback(true)
+                            } else {
+                                Log.e("GeekDS", "Download verification failed: $filename")
+                                file.delete() // Clean up corrupt file
+                                callback(false)
+                            }
+                        } else {
+                            Log.e("GeekDS", "Failed to move temp file: $filename")
+                            tempFile.delete()
+                            callback(false)
+                        }
+                    } else {
+                        Log.e("GeekDS", "Download produced empty file: $filename")
+                        tempFile.delete()
+                        callback(false)
+                    }
                 } catch (e: Exception) {
                     Log.e("GeekDS", "Error saving file: $filename", e)
+                    // Clean up any partial files
+                    file.delete()
+                    File(file.parent, "${filename}.tmp").delete()
                     callback(false)
                 }
             }
@@ -1236,15 +1279,41 @@ class MainActivity : Activity() {
         Log.d("GeekDS", "=== END DEBUG INFO ===")
     }
 
-    // Updated enforceSchedule with better logging
     // Enhanced schedule enforcement with new schedule format
     private fun enforceSchedule() {
         val schedule = loadSchedule(this) ?: run {
-            Log.w("GeekDS", "enforceSchedule: No schedule loaded")
+            // Only log once per minute to avoid spam
+            val now = System.currentTimeMillis()
+            if (now - lastScheduleLogTime > 60000L) {
+                Log.w("GeekDS", "enforceSchedule: No schedule loaded")
+                lastScheduleLogTime = now
+            }
+            
+            // If no schedule, ensure playback is stopped
+            if (isPlaylistActive) {
+                Log.i("GeekDS", "*** STOPPING PLAYBACK *** - no schedule available")
+                isPlaylistActive = false
+                currentPlaylistId = null
+                runOnUiThread { showStandby() }
+            }
             return
         }
+        
         val playlist = loadPlaylist(this) ?: run {
-            Log.w("GeekDS", "enforceSchedule: No playlist loaded")
+            // Only log once per minute to avoid spam  
+            val now = System.currentTimeMillis()
+            if (now - lastPlaylistLogTime > 60000L) {
+                Log.w("GeekDS", "enforceSchedule: No playlist loaded")
+                lastPlaylistLogTime = now
+            }
+            
+            // If no playlist, ensure playback is stopped
+            if (isPlaylistActive) {
+                Log.i("GeekDS", "*** STOPPING PLAYBACK *** - no playlist available")
+                isPlaylistActive = false
+                currentPlaylistId = null
+                runOnUiThread { showStandby() }
+            }
             return
         }
 
@@ -1334,14 +1403,23 @@ class MainActivity : Activity() {
         }
 
         if (inTimeSlot) {
-            // Start playback if not already active
-            if (!isPlaylistActive || currentPlaylistId != playlist.id) {
+            // Only start/restart playback if not already active with the same playlist
+            if (!isPlaylistActive) {
                 Log.i("GeekDS", "*** STARTING PLAYBACK *** playlist=${playlist.id}, files=${playlist.mediaFiles.size}")
                 isPlaylistActive = true
                 currentPlaylistId = playlist.id
                 runOnUiThread {
                     startPlaylistPlayback(playlist)
                 }
+            } else if (currentPlaylistId != playlist.id) {
+                Log.i("GeekDS", "*** SWITCHING PLAYLIST *** from $currentPlaylistId to ${playlist.id}")
+                currentPlaylistId = playlist.id
+                runOnUiThread {
+                    startPlaylistPlayback(playlist)
+                }
+            } else {
+                // Playlist is already active and it's the same playlist - do nothing
+                // This prevents unnecessary restarts during periodic schedule checks
             }
         } else {
             // Outside time slot
@@ -1375,16 +1453,20 @@ class MainActivity : Activity() {
 
     // Enhanced startPlaylistPlayback method
     private fun startPlaylistPlayback(playlist: Playlist) {
-        Log.i("GeekDS", ">>> startPlaylistPlaybook called with ${playlist.mediaFiles.size} items")
+        Log.i("GeekDS", ">>> startPlaylistPlayback called with ${playlist.mediaFiles.size} items")
 
         try {
-            // Check if all files exist locally
+            // Check if all files exist locally and are complete
             val availableFiles = playlist.mediaFiles.filter { mediaFile ->
                 val file = File(getExternalFilesDir(null), mediaFile.filename)
                 val exists = file.exists()
                 val size = if (exists) file.length() else 0
-                Log.i("GeekDS", "File check: ${mediaFile.filename}, exists=$exists, size=$size, path=${file.absolutePath}")
-                exists && size > 0
+                val canRead = if (exists) file.canRead() else false
+                
+                Log.i("GeekDS", "File check: ${mediaFile.filename}, exists=$exists, size=$size, canRead=$canRead, path=${file.absolutePath}")
+                
+                // File must exist, have content, and be readable
+                exists && size > 0 && canRead
             }
 
             Log.i("GeekDS", "Available files: ${availableFiles.size}/${playlist.mediaFiles.size}")
@@ -1392,7 +1474,15 @@ class MainActivity : Activity() {
             if (availableFiles.isEmpty()) {
                 Log.e("GeekDS", "*** NO MEDIA FILES AVAILABLE - SHOWING STANDBY ***")
                 setState(State.ERROR, "No media files available")
+                isPlaylistActive = false
                 showStandby()
+                return
+            }
+
+            // If not all files are ready, wait for downloads to complete
+            if (availableFiles.size < playlist.mediaFiles.size) {
+                Log.w("GeekDS", "Not all files ready (${availableFiles.size}/${playlist.mediaFiles.size}) - waiting for downloads")
+                setState(State.SYNCING, "Waiting for file downloads...")
                 return
             }
 
@@ -1404,6 +1494,7 @@ class MainActivity : Activity() {
                 // Release previous player if exists
                 player?.let {
                     Log.i("GeekDS", "Releasing previous player")
+                    it.stop()
                     it.release()
                 }
 
@@ -1427,8 +1518,10 @@ class MainActivity : Activity() {
                 // Build MediaItem list from available files only
                 val mediaItems = availableFiles.map { mediaFile ->
                     val file = File(getExternalFilesDir(null), mediaFile.filename)
-                    val uri = file.toURI().toString()
-                    Log.i("GeekDS", "Adding MediaItem: $uri")
+                    
+                    // Use Android Uri.fromFile() instead of file.toURI().toString() for better compatibility
+                    val uri = android.net.Uri.fromFile(file)
+                    Log.i("GeekDS", "Adding MediaItem: $uri (file size: ${file.length()})")
                     MediaItem.fromUri(uri)
                 }
 
