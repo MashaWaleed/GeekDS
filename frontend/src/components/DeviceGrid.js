@@ -28,7 +28,10 @@ import {
   Avatar,
   Tooltip,
   Switch,
-  FormControlLabel
+  FormControlLabel,
+  Alert,
+  Snackbar,
+  Fab
 } from '@mui/material';
 import {
   Search as SearchIcon,
@@ -38,7 +41,11 @@ import {
   Circle as CircleIcon,
   Send as SendIcon,
   ViewList as ViewListIcon,
-  ViewModule as ViewModuleIcon
+  ViewModule as ViewModuleIcon,
+  Add as AddIcon,
+  Edit as EditIcon,
+  Delete as DeleteIcon,
+  QrCode as QrCodeIcon
 } from '@mui/icons-material';
 
 function DeviceGrid() {
@@ -55,6 +62,16 @@ function DeviceGrid() {
   const [viewMode, setViewMode] = useState('grid'); // 'grid' or 'table'
   const [autoRefresh, setAutoRefresh] = useState(true);
 
+  // New registration and management state
+  const [registerOpen, setRegisterOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [registrationCode, setRegistrationCode] = useState('');
+  const [deviceName, setDeviceName] = useState('');
+  const [editDevice, setEditDevice] = useState(null);
+  const [deviceToDelete, setDeviceToDelete] = useState(null);
+  const [snackbar, setSnackbar] = useState({ open: false, message: '', severity: 'info' });
+
   const API_URL = process.env.REACT_APP_API_URL;
 
   const fetchDevices = () => {
@@ -69,6 +86,102 @@ function DeviceGrid() {
         console.error('Error fetching devices:', error);
         setLoading(false);
       });
+  };
+
+  // NEW: Device registration handler
+  const handleRegisterDevice = async () => {
+    if (!registrationCode.trim() || !deviceName.trim()) {
+      setSnackbar({ open: true, message: 'Both registration code and device name are required', severity: 'error' });
+      return;
+    }
+
+    try {
+      const response = await fetch(`${API_URL}/api/devices/register-device`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          code: registrationCode.trim(),
+          name: deviceName.trim()
+        }),
+      });
+
+      const data = await response.json();
+      
+      if (response.ok) {
+        setSnackbar({ open: true, message: 'Device registered successfully!', severity: 'success' });
+        setRegisterOpen(false);
+        setRegistrationCode('');
+        setDeviceName('');
+        fetchDevices();
+      } else {
+        setSnackbar({ open: true, message: data.error || 'Registration failed', severity: 'error' });
+      }
+    } catch (error) {
+      console.error('Error registering device:', error);
+      setSnackbar({ open: true, message: 'Network error during registration', severity: 'error' });
+    }
+  };
+
+  // NEW: Device editing handler
+  const handleEditDevice = async () => {
+    if (!editDevice || !editDevice.name.trim()) {
+      setSnackbar({ open: true, message: 'Device name is required', severity: 'error' });
+      return;
+    }
+
+    try {
+      const response = await fetch(`${API_URL}/api/devices/${editDevice.id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          name: editDevice.name.trim(),
+          ip: editDevice.ip
+        }),
+      });
+
+      const data = await response.json();
+      
+      if (response.ok) {
+        setSnackbar({ open: true, message: 'Device updated successfully!', severity: 'success' });
+        setEditOpen(false);
+        setEditDevice(null);
+        fetchDevices();
+      } else {
+        setSnackbar({ open: true, message: data.error || 'Update failed', severity: 'error' });
+      }
+    } catch (error) {
+      console.error('Error updating device:', error);
+      setSnackbar({ open: true, message: 'Network error during update', severity: 'error' });
+    }
+  };
+
+  // NEW: Device deletion handler
+  const handleDeleteDevice = async () => {
+    if (!deviceToDelete) return;
+
+    try {
+      const response = await fetch(`${API_URL}/api/devices/${deviceToDelete.id}`, {
+        method: 'DELETE',
+      });
+
+      const data = await response.json();
+      
+      if (response.ok) {
+        setSnackbar({ open: true, message: 'Device deleted successfully!', severity: 'success' });
+        setDeleteOpen(false);
+        setDeviceToDelete(null);
+        fetchDevices();
+      } else {
+        setSnackbar({ open: true, message: data.error || 'Deletion failed', severity: 'error' });
+      }
+    } catch (error) {
+      console.error('Error deleting device:', error);
+      setSnackbar({ open: true, message: 'Network error during deletion', severity: 'error' });
+    }
   };
 
   useEffect(() => {
@@ -189,18 +302,48 @@ function DeviceGrid() {
             )}
           </Box>
 
-          <Button
-            variant="outlined"
-            size="small"
-            startIcon={<SendIcon />}
-            fullWidth
-            onClick={() => {
-              setCmdDevice(device.id);
-              setCmdOpen(true);
-            }}
-          >
-            Send Command
-          </Button>
+          <Box display="flex" gap={1} mb={1}>
+            <Button
+              variant="outlined"
+              size="small"
+              startIcon={<SendIcon />}
+              fullWidth
+              onClick={() => {
+                setCmdDevice(device.id);
+                setCmdOpen(true);
+              }}
+            >
+              Send Command
+            </Button>
+          </Box>
+          
+          <Box display="flex" gap={1}>
+            <Button
+              variant="outlined"
+              size="small"
+              startIcon={<EditIcon />}
+              onClick={() => {
+                setEditDevice({ ...device });
+                setEditOpen(true);
+              }}
+              sx={{ flex: 1 }}
+            >
+              Edit
+            </Button>
+            <Button
+              variant="outlined"
+              color="error"
+              size="small"
+              startIcon={<DeleteIcon />}
+              onClick={() => {
+                setDeviceToDelete(device);
+                setDeleteOpen(true);
+              }}
+              sx={{ flex: 1 }}
+            >
+              Delete
+            </Button>
+          </Box>
         </CardContent>
       </Card>
     </Grid>
@@ -310,6 +453,13 @@ function DeviceGrid() {
           
           <Grid item xs={12} md={6}>
             <Box display="flex" justifyContent="flex-end" alignItems="center" gap={1}>
+              <Button
+                variant="contained"
+                startIcon={<AddIcon />}
+                onClick={() => setRegisterOpen(true)}
+              >
+                Add Device
+              </Button>
               <FormControlLabel
                 control={
                   <Switch
@@ -445,6 +595,116 @@ function DeviceGrid() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* Device Registration Dialog */}
+      <Dialog open={registerOpen} onClose={() => setRegisterOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Register New Device</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            Enter the 6-digit registration code displayed on the device screen and give the device a name.
+          </Typography>
+          <TextField
+            label="Registration Code"
+            value={registrationCode}
+            onChange={(e) => setRegistrationCode(e.target.value)}
+            fullWidth
+            margin="normal"
+            placeholder="123456"
+            inputProps={{ maxLength: 6 }}
+            helperText="6-digit code shown on device screen"
+          />
+          <TextField
+            label="Device Name"
+            value={deviceName}
+            onChange={(e) => setDeviceName(e.target.value)}
+            fullWidth
+            margin="normal"
+            placeholder="Conference Room TV"
+            helperText="Give this device a descriptive name"
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setRegisterOpen(false)}>Cancel</Button>
+          <Button 
+            onClick={handleRegisterDevice} 
+            variant="contained" 
+            disabled={!registrationCode.trim() || !deviceName.trim()}
+          >
+            Register Device
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Device Edit Dialog */}
+      <Dialog open={editOpen} onClose={() => setEditOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Edit Device</DialogTitle>
+        <DialogContent>
+          <TextField
+            label="Device Name"
+            value={editDevice?.name || ''}
+            onChange={(e) => setEditDevice({ ...editDevice, name: e.target.value })}
+            fullWidth
+            margin="normal"
+            placeholder="Conference Room TV"
+          />
+          <TextField
+            label="IP Address"
+            value={editDevice?.ip || ''}
+            onChange={(e) => setEditDevice({ ...editDevice, ip: e.target.value })}
+            fullWidth
+            margin="normal"
+            placeholder="192.168.1.100"
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setEditOpen(false)}>Cancel</Button>
+          <Button 
+            onClick={handleEditDevice} 
+            variant="contained"
+            disabled={!editDevice?.name?.trim()}
+          >
+            Update Device
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Device Delete Confirmation Dialog */}
+      <Dialog open={deleteOpen} onClose={() => setDeleteOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Delete Device</DialogTitle>
+        <DialogContent>
+          <Typography>
+            Are you sure you want to delete the device "{deviceToDelete?.name}"?
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+            This action cannot be undone. The device will need to be re-registered if you want to add it back.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDeleteOpen(false)}>Cancel</Button>
+          <Button 
+            onClick={handleDeleteDevice} 
+            variant="contained" 
+            color="error"
+          >
+            Delete Device
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Snackbar for notifications */}
+      <Snackbar
+        open={snackbar.open}
+        autoHideDuration={6000}
+        onClose={() => setSnackbar({ ...snackbar, open: false })}
+      >
+        <Alert 
+          onClose={() => setSnackbar({ ...snackbar, open: false })} 
+          severity={snackbar.severity}
+          sx={{ width: '100%' }}
+        >
+          {snackbar.message}
+        </Alert>
+      </Snackbar>
     </Box>
   );
 }
