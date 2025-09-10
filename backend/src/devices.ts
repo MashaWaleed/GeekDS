@@ -1,7 +1,62 @@
 import { Router } from 'express';
 import { pool } from './models';
+import multer from 'multer';
+import path from 'path';
+import fs from 'fs';
 
 const router = Router();
+
+// Create screenshots directory if it doesn't exist
+const screenshotsDir = path.join(__dirname, '..', 'screenshots');
+if (!fs.existsSync(screenshotsDir)) {
+  fs.mkdirSync(screenshotsDir, { recursive: true });
+}
+
+// Configure multer for screenshot uploads
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, screenshotsDir);
+  },
+  filename: (req, file, cb) => {
+    const deviceId = req.params.id || 'unknown';
+    const timestamp = Date.now();
+    cb(null, `device_${deviceId}_${timestamp}.png`);
+  }
+});
+
+const upload = multer({ 
+  storage,
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only image files are allowed'));
+    }
+  }
+});
+
+// Clean up old screenshots every hour
+setInterval(() => {
+  const oneHourAgo = Date.now() - (60 * 60 * 1000);
+  
+  fs.readdir(screenshotsDir, (err, files) => {
+    if (err) return;
+    
+    files.forEach(file => {
+      const filepath = path.join(screenshotsDir, file);
+      fs.stat(filepath, (err, stats) => {
+        if (err) return;
+        
+        if (stats.mtime.getTime() < oneHourAgo) {
+          fs.unlink(filepath, (err) => {
+            if (err) console.error('Error deleting old screenshot:', err);
+          });
+        }
+      });
+    });
+  });
+}, 60 * 60 * 1000); // Run every hour
 
 // Store pending registrations in memory (in production, use Redis)
 const pendingRegistrations = new Map<string, {
@@ -226,6 +281,180 @@ router.patch('/:id', async (req, res) => {
   } catch (error) {
     console.error('Error updating device:', error);
     res.status(500).json({ error: 'Failed to update device' });
+  }
+});
+
+// NEW: Request screenshot from device (HTTP polling approach)
+router.post('/:id/screenshot', async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    // Check if device exists and is online
+    const deviceResult = await pool.query(
+      'SELECT id, name, status FROM devices WHERE id = $1',
+      [id]
+    );
+
+    if (deviceResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Device not found' });
+    }
+
+    const device = deviceResult.rows[0];
+    
+    if (device.status !== 'online') {
+      return res.status(400).json({ error: 'Device is offline' });
+    }
+
+    // Create a screenshot request record in database
+    await pool.query(
+      'INSERT INTO screenshot_requests (device_id, requested_at, status) VALUES ($1, NOW(), $2)',
+      [id, 'pending']
+    );
+
+    console.log(`Screenshot request queued for device ${device.name} (ID: ${id})`);
+    
+    res.json({ 
+      message: 'Screenshot request queued - device will respond during next poll',
+      device_id: id,
+      device_name: device.name
+    });
+
+  } catch (error) {
+    console.error('Error requesting screenshot:', error);
+    res.status(500).json({ error: 'Failed to request screenshot' });
+  }
+});
+
+// NEW: Device polls for commands (including screenshot requests)
+router.get('/:id/commands', async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    // Check for pending screenshot requests
+    const screenshotRequests = await pool.query(
+      'SELECT id FROM screenshot_requests WHERE device_id = $1 AND status = $2 ORDER BY requested_at DESC LIMIT 1',
+      [id, 'pending']
+    );
+
+    const commands = [];
+
+    if (screenshotRequests.rows.length > 0) {
+      const requestId = screenshotRequests.rows[0].id;
+      
+      // Mark as processing
+      await pool.query(
+        'UPDATE screenshot_requests SET status = $1, processed_at = NOW() WHERE id = $2',
+        ['processing', requestId]
+      );
+
+      commands.push({
+        type: 'screenshot_request',
+        request_id: requestId,
+        timestamp: Date.now()
+      });
+
+      console.log(`Screenshot command sent to device ${id} via polling`);
+    }
+
+    res.json({ commands });
+
+  } catch (error) {
+    console.error('Error getting commands:', error);
+    res.status(500).json({ error: 'Failed to get commands' });
+  }
+});
+
+// NEW: Device uploads screenshot
+router.post('/:id/screenshot/upload', upload.single('screenshot'), async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No screenshot file provided' });
+    }
+
+    console.log(`Screenshot uploaded for device ${id}: ${req.file.filename}, size: ${req.file.size} bytes`);
+    
+    // Mark any processing screenshot requests as completed
+    await pool.query(
+      'UPDATE screenshot_requests SET status = $1 WHERE device_id = $2 AND status = $3',
+      ['completed', id, 'processing']
+    );
+    
+    res.json({
+      message: 'Screenshot uploaded successfully',
+      filename: req.file.filename,
+      size: req.file.size,
+      device_id: id
+    });
+  } catch (error) {
+    console.error('Error uploading screenshot:', error);
+    res.status(500).json({ error: 'Failed to upload screenshot' });
+  }
+});
+
+// NEW: Get screenshot for device
+router.get('/:id/screenshot/latest', async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    // Find the latest screenshot for this device
+    const files = fs.readdirSync(screenshotsDir);
+    const deviceScreenshots = files
+      .filter(file => file.startsWith(`device_${id}_`))
+      .map(file => ({
+        filename: file,
+        timestamp: parseInt(file.split('_')[2].split('.')[0])
+      }))
+      .sort((a, b) => b.timestamp - a.timestamp);
+
+    if (deviceScreenshots.length === 0) {
+      return res.status(404).json({ error: 'No screenshot found for this device' });
+    }
+
+    const latestScreenshot = deviceScreenshots[0];
+    const filepath = path.join(screenshotsDir, latestScreenshot.filename);
+    
+    res.sendFile(filepath);
+  } catch (error) {
+    console.error('Error getting screenshot:', error);
+    res.status(500).json({ error: 'Failed to get screenshot' });
+  }
+});
+
+// NEW: Check if screenshot exists for device
+router.get('/:id/screenshot/status', async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const files = fs.readdirSync(screenshotsDir);
+    const deviceScreenshots = files
+      .filter(file => file.startsWith(`device_${id}_`))
+      .map(file => ({
+        filename: file,
+        timestamp: parseInt(file.split('_')[2].split('.')[0])
+      }))
+      .sort((a, b) => b.timestamp - a.timestamp);
+
+    if (deviceScreenshots.length === 0) {
+      return res.json({ 
+        available: false, 
+        message: 'No screenshot available' 
+      });
+    }
+
+    const latestScreenshot = deviceScreenshots[0];
+    const age = Date.now() - latestScreenshot.timestamp;
+
+    res.json({
+      available: true,
+      filename: latestScreenshot.filename,
+      timestamp: latestScreenshot.timestamp,
+      age_seconds: Math.floor(age / 1000)
+    });
+  } catch (error) {
+    console.error('Error checking screenshot status:', error);
+    res.status(500).json({ error: 'Failed to check screenshot status' });
   }
 });
 

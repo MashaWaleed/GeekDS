@@ -1,6 +1,8 @@
 package com.example.geekds
 
 import android.app.Activity
+import android.app.AlertDialog
+import android.content.Context
 import android.widget.ImageView
 import android.widget.RelativeLayout
 import android.graphics.Color
@@ -12,7 +14,9 @@ import android.os.Looper
 import android.util.Log
 import android.widget.TextView
 import okhttp3.*
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -29,12 +33,20 @@ import com.google.gson.Gson
 import kotlinx.coroutines.*
 import kotlin.concurrent.fixedRateTimer
 import java.time.ZoneId
+// NEW: Screenshot imports
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import java.io.ByteArrayOutputStream
+import kotlin.math.min
+import android.view.View
+import android.view.TextureView
+import android.view.SurfaceView
+import kotlinx.coroutines.Dispatchers
 import java.time.ZonedDateTime
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.text.SimpleDateFormat
 import android.content.BroadcastReceiver
-import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.net.ConnectivityManager
@@ -52,9 +64,9 @@ class MainActivity : Activity() {
 
     // Enhanced OkHttpClient with longer timeouts and retry
     private val client = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
-        .writeTimeout(30, TimeUnit.SECONDS)
+        .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+        .writeTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .build()
     private val handler = Handler(Looper.getMainLooper())
@@ -149,20 +161,37 @@ class MainActivity : Activity() {
         setupWakeLock()
 
         deviceId = loadDeviceId()
+        
+        // Load device name from saved preferences if available
+        loadDeviceName()?.let { savedName ->
+            deviceName = savedName
+            Log.i("GeekDS", "Loaded saved device name: '$deviceName'")
+        }
+        
         if (deviceId != null) {
-            setState(State.IDLE, "Loaded device $deviceId")
+            setState(State.IDLE, "Loaded device $deviceId (name: '$deviceName')")
             startBackgroundTasks()
         } else {
             setState(State.REGISTERING, "Registering device...")
-            registerDevice()
+            showRegistrationScreen() // Use proper registration flow
         }
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        
+        // Stop registration polling
+        stopRegistrationPolling()
+        
+        // Dismiss any dialogs
+        currentRegistrationDialog?.dismiss()
+        
+        // Clean up player
         player?.release()
         player = null
         standbyImageView = null
+        
+        // Clean up coroutines
         scope.cancel()
         scheduleEnforcerJob?.cancel()
 
@@ -308,7 +337,7 @@ class MainActivity : Activity() {
             if (isNetworkConnected()) {
                 Log.i("GeekDS", "Retrying $operation after backoff")
                 when (operation) {
-                    "registration" -> registerDevice()
+                    "registration" -> showRegistrationScreen()
                     "heartbeat" -> sendHeartbeat()
                     "sync" -> syncScheduleAndMedia()
                 }
@@ -338,7 +367,7 @@ class MainActivity : Activity() {
 
                     // Re-register if needed
                     if (deviceId == null) {
-                        registerDevice()
+                        showRegistrationScreen()
                     } else {
                         // Try a simple heartbeat first
                         sendHeartbeat()
@@ -372,6 +401,19 @@ class MainActivity : Activity() {
         return if (id != -1) id else null
     }
 
+    private fun saveDeviceName(name: String) {
+        getSharedPreferences("geekds_prefs", MODE_PRIVATE)
+            .edit()
+            .putString("device_name", name)
+            .apply()
+        Log.i("GeekDS", "Device name saved: '$name'")
+    }
+
+    private fun loadDeviceName(): String? {
+        return getSharedPreferences("geekds_prefs", MODE_PRIVATE)
+            .getString("device_name", null)
+    }
+
     // Utility: Get current device IP address (IPv4, non-loopback)
     private fun getLocalIpAddress(): String? {
         val interfaces = Collections.list(NetworkInterface.getNetworkInterfaces())
@@ -386,60 +428,13 @@ class MainActivity : Activity() {
         return null
     }
 
-    private fun registerDevice() {
-        if (!isNetworkConnected()) {
-            Log.w("GeekDS", "Cannot register - no network connection")
-            setState(State.ERROR, "No network connection")
-            retryLater { registerDevice() }
-            return
-        }
-
-        val json = JSONObject()
-        json.put("name", deviceName)
-        val ip = getLocalIpAddress() ?: "unknown"
-        json.put("ip", ip)
-
-        val body = RequestBody.create(
-            "application/json".toMediaTypeOrNull(), json.toString()
-        )
-        val req = Request.Builder()
-            .url("$cmsUrl/api/devices")
-            .post(body)
-            .build()
-
-        client.newCall(req).enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) {
-                handleConnectionError("registration", e)
-            }
-
-            override fun onResponse(call: Call, response: Response) {
-                if (!response.isSuccessful) {
-                    handleConnectionError("registration", Exception("HTTP ${response.code}"))
-                    return
-                }
-                try {
-                    val resp = response.body?.string()
-                    val obj = JSONObject(resp)
-                    deviceId = obj.getInt("id")
-                    saveDeviceId(deviceId!!)
-                    lastSuccessfulConnection = System.currentTimeMillis()
-                    connectionFailureCount = 0
-                    setState(State.IDLE, "Registered as device $deviceId")
-                    startBackgroundTasks()
-                } catch (e: Exception) {
-                    handleConnectionError("registration", e)
-                }
-            }
-        })
-    }
-
     // Updated startBackgroundTasks to add debug info
     private fun startBackgroundTasks() {
         // Cancel any existing jobs
         scope.coroutineContext.cancelChildren()
         scheduleEnforcerJob?.cancel()
 
-        Log.i("GeekDS", "Starting resilient background tasks")
+        Log.i("GeekDS", "Starting efficient background tasks")
 
         // Add initial debug info
         handler.postDelayed({
@@ -587,16 +582,318 @@ class MainActivity : Activity() {
             }
 
             override fun onResponse(call: Call, response: Response) {
-                if (!response.isSuccessful) {
-                    handleConnectionError("heartbeat", Exception("HTTP ${response.code}"))
-                } else {
-                    lastSuccessfulConnection = System.currentTimeMillis()
-                    connectionFailureCount = 0
-                    setState(State.IDLE, "Heartbeat sent for device $id (name: $deviceName, ip: $currentIp)")
-                    Log.d("GeekDS", "Heartbeat sent with updated device info - name: '$deviceName', ip: '$currentIp'")
+                when (response.code) {
+                    200 -> {
+                        // Successful heartbeat - extract device info from response
+                        lastSuccessfulConnection = System.currentTimeMillis()
+                        connectionFailureCount = 0
+                        
+                        // Check if server returned updated device info
+                        try {
+                            val responseBody = response.body?.string()
+                            if (responseBody != null) {
+                                val deviceInfo = JSONObject(responseBody)
+                                val serverDeviceName = deviceInfo.getString("name")
+                                
+                                // Update device name if it changed in CMS
+                                if (serverDeviceName != deviceName) {
+                                    deviceName = serverDeviceName
+                                    saveDeviceName(serverDeviceName)
+                                    Log.i("GeekDS", "Device name updated from server: '$serverDeviceName'")
+                                }
+                            }
+                        } catch (e: Exception) {
+                            // Not critical if we can't parse response - just log and continue
+                            Log.w("GeekDS", "Could not parse heartbeat response for device info: ${e.message}")
+                        }
+                        
+                        setState(State.IDLE, "Heartbeat sent for device $id (name: $deviceName, ip: $currentIp)")
+                        Log.d("GeekDS", "Heartbeat sent with updated device info - name: '$deviceName', ip: '$currentIp'")
+                    }
+                    404 -> {
+                        // Device was deleted from CMS!
+                        Log.w("GeekDS", "Device $id was deleted from CMS - clearing registration")
+                        clearDeviceRegistration()
+                        showRegistrationScreen()
+                    }
+                    else -> {
+                        handleConnectionError("heartbeat", Exception("HTTP ${response.code}"))
+                    }
                 }
             }
         })
+    }
+
+    private fun clearDeviceRegistration() {
+        deviceId = null
+        val sharedPrefs = getSharedPreferences("DevicePrefs", Context.MODE_PRIVATE)
+        with(sharedPrefs.edit()) {
+            putInt("device_id", -1) // Use -1 as invalid device ID
+            apply()
+        }
+        
+        // Also clear from main prefs and reset device name
+        getSharedPreferences("geekds_prefs", MODE_PRIVATE).edit().clear().apply()
+        deviceName = "ARC-A-GR-18" // Reset to default
+        
+        // Stop all background activities
+        stopAllActivities()
+    }
+
+    private fun stopAllActivities() {
+        try {
+            // Cancel all background jobs gracefully
+            scheduleEnforcerJob?.cancel()
+            
+            // Use a new scope for stopping activities to avoid cancellation issues
+            runOnUiThread {
+                try {
+                    // Stop player safely
+                    player?.stop()
+                    player?.release()
+                    player = null
+                    playerView = null
+                    
+                    // Show standby screen
+                    showStandby()
+                    
+                    Log.i("GeekDS", "All activities stopped for re-registration")
+                } catch (e: Exception) {
+                    Log.e("GeekDS", "Error stopping activities", e)
+                }
+            }
+            
+            // Cancel background jobs after UI cleanup
+            scope.coroutineContext.cancelChildren()
+            
+        } catch (e: Exception) {
+            Log.e("GeekDS", "Error in stopAllActivities", e)
+        }
+    }
+
+    private fun showRegistrationScreen() {
+        runOnUiThread {
+            // Stop all activities first
+            stopAllActivities()
+            setState(State.REGISTERING, "Device needs registration...")
+            
+            // Show registration dialog immediately while requesting code
+            showWaitingDialog()
+            
+            // Request a registration code from the server
+            requestRegistrationCode()
+        }
+    }
+
+    private var currentRegistrationDialog: AlertDialog? = null
+
+    private fun showWaitingDialog() {
+        currentRegistrationDialog?.dismiss()
+        currentRegistrationDialog = AlertDialog.Builder(this)
+            .setTitle("Device Registration Required")
+            .setMessage("Requesting registration code from server...\n\nPlease wait...")
+            .setCancelable(false)
+            .show()
+    }
+
+    private fun requestRegistrationCode() {
+        val currentIp = getLocalIpAddress() ?: "unknown"
+        
+        val json = JSONObject().apply {
+            put("ip", currentIp)
+        }
+
+        val body = json.toString().toRequestBody("application/json".toMediaType())
+        val request = Request.Builder()
+            .url("$cmsUrl/api/devices/register-request")
+            .post(body)
+            .build()
+
+        client.newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                runOnUiThread {
+                    setState(State.ERROR, "Failed to request registration code: ${e.message}")
+                    showErrorDialog("Network Error", "Could not connect to server to get registration code.\n\nRetrying in 5 seconds...")
+                    handler.postDelayed({ requestRegistrationCode() }, 5000)
+                }
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                val responseBody = response.body?.string()
+                
+                if (response.isSuccessful && responseBody != null) {
+                    try {
+                        val jsonResponse = JSONObject(responseBody)
+                        val code = jsonResponse.getString("code")
+                        
+                        runOnUiThread {
+                            showRegistrationDialog(code)
+                            startRegistrationPolling(currentIp)
+                        }
+                    } catch (e: Exception) {
+                        runOnUiThread {
+                            setState(State.ERROR, "Failed to parse registration response")
+                            showErrorDialog("Server Error", "Invalid response from server.\n\nRetrying in 5 seconds...")
+                            handler.postDelayed({ requestRegistrationCode() }, 5000)
+                        }
+                    }
+                } else {
+                    runOnUiThread {
+                        setState(State.ERROR, "Failed to get registration code: HTTP ${response.code}")
+                        showErrorDialog("Server Error", "Server returned error: ${response.code}\n\nRetrying in 5 seconds...")
+                        handler.postDelayed({ requestRegistrationCode() }, 5000)
+                    }
+                }
+            }
+        })
+    }
+
+    private fun showErrorDialog(title: String, message: String) {
+        currentRegistrationDialog?.dismiss()
+        currentRegistrationDialog = AlertDialog.Builder(this)
+            .setTitle(title)
+            .setMessage(message)
+            .setPositiveButton("Retry Now") { _, _ ->
+                requestRegistrationCode()
+            }
+            .setCancelable(false)
+            .show()
+    }
+
+    private var registrationPollingRunnable: Runnable? = null
+
+    private fun startRegistrationPolling(ip: String) {
+        // Stop any existing polling
+        registrationPollingRunnable?.let { handler.removeCallbacks(it) }
+        
+        registrationPollingRunnable = object : Runnable {
+            override fun run() {
+                checkRegistrationStatus(ip, this)
+            }
+        }
+        
+        // Start polling immediately, then every 2 seconds
+        registrationPollingRunnable?.let { handler.post(it) }
+    }
+
+    private fun stopRegistrationPolling() {
+        registrationPollingRunnable?.let { handler.removeCallbacks(it) }
+        registrationPollingRunnable = null
+    }
+
+    private fun checkRegistrationStatus(ip: String, pollingRunnable: Runnable) {
+        val request = Request.Builder()
+            .url("$cmsUrl/api/devices/check-registration/$ip")
+            .get()
+            .build()
+
+        client.newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                // Continue polling on failure, but only if we're still in registration state
+                if (state == State.REGISTERING) {
+                    handler.postDelayed(pollingRunnable, 2000)
+                }
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                val responseBody = response.body?.string()
+                
+                if (response.isSuccessful && responseBody != null) {
+                    try {
+                        val jsonResponse = JSONObject(responseBody)
+                        val registered = jsonResponse.getBoolean("registered")
+                        
+                        if (registered) {
+                            val deviceJson = jsonResponse.getJSONObject("device")
+                            val newDeviceId = deviceJson.getInt("id")
+                            val newDeviceName = deviceJson.getString("name")
+                            
+                            runOnUiThread {
+                                stopRegistrationPolling()
+                                currentRegistrationDialog?.dismiss()
+                                
+                                deviceId = newDeviceId
+                                saveDeviceId(newDeviceId)
+                                
+                                // Update device name from server
+                                deviceName = newDeviceName
+                                saveDeviceName(newDeviceName)
+                                
+                                setState(State.IDLE, "Device registered successfully - ID: $newDeviceId, Name: '$newDeviceName'")
+                                
+                                // Start normal operations immediately
+                                startBackgroundTasks()
+                                
+                                Log.i("GeekDS", "Registration completed! Device ID: $newDeviceId, Name: '$newDeviceName'")
+                            }
+                        } else {
+                            // Continue polling only if still in registration state
+                            if (state == State.REGISTERING) {
+                                handler.postDelayed(pollingRunnable, 2000)
+                            }
+                        }
+                    } catch (e: Exception) {
+                        // Continue polling on parse error, but only if still in registration state
+                        if (state == State.REGISTERING) {
+                            handler.postDelayed(pollingRunnable, 2000)
+                        }
+                    }
+                } else {
+                    // Continue polling on error, but only if still in registration state
+                    if (state == State.REGISTERING) {
+                        handler.postDelayed(pollingRunnable, 2000)
+                    }
+                }
+            }
+        })
+    }
+
+    private fun showRegistrationDialog(code: String) {
+        currentRegistrationDialog?.dismiss()
+        currentRegistrationDialog = AlertDialog.Builder(this)
+            .setTitle("Device Registration")
+            .setMessage("Please register this device in the CMS dashboard:\n\n" +
+                    "Registration Code: $code\n\n" +
+                    "Steps:\n" +
+                    "1. Open CMS Dashboard\n" +
+                    "2. Click 'Add Device'\n" +
+                    "3. Enter code: $code\n" +
+                    "4. Enter device name\n" +
+                    "5. Click 'Register'\n\n" +
+                    "Waiting for registration...")
+            .setPositiveButton("Get New Code") { _, _ ->
+                stopRegistrationPolling()
+                requestRegistrationCode()
+            }
+            .setNegativeButton("Check Network") { _, _ ->
+                showNetworkInfo()
+            }
+            .setCancelable(false)
+            .show()
+    }
+
+    private fun showNetworkInfo() {
+        val ip = getLocalIpAddress() ?: "No IP"
+        val networkConnected = isNetworkConnected()
+        
+        currentRegistrationDialog?.dismiss()
+        currentRegistrationDialog = AlertDialog.Builder(this)
+            .setTitle("Network Information")
+            .setMessage("Device IP: $ip\n" +
+                    "Network Connected: ${if(networkConnected) "Yes" else "No"}\n" +
+                    "Server URL: $cmsUrl\n\n" +
+                    "Make sure:\n" +
+                    "• Device has internet connection\n" +
+                    "• CMS server is running\n" +
+                    "• Server URL is correct")
+            .setPositiveButton("Continue Registration") { _, _ ->
+                requestRegistrationCode()
+            }
+            .setNegativeButton("Retry Connection") { _, _ ->
+                requestRegistrationCode()
+            }
+            .setCancelable(false)
+            .show()
     }
 
     // FIXED: Update the sync method to use UTC consistently
@@ -1166,8 +1463,9 @@ class MainActivity : Activity() {
         }
         runOnUiThread {
             try {
-                val playerView = PlayerView(this)
-                playerView.useController = false // Hide controls
+                val playerView = PlayerView(this).apply {
+                    useController = false // Hide controls
+                }
                 setContentView(playerView)
                 val player = ExoPlayer.Builder(this).build()
                 playerView.player = player
@@ -1198,8 +1496,42 @@ class MainActivity : Activity() {
     }
 
     private fun pollCommands() {
-        // TODO: Implement polling for commands and executing them
-        // Example: GET $cmsUrl/api/devices/$deviceId/commands
+        val id = deviceId ?: return
+
+        val req = Request.Builder()
+            .url("$cmsUrl/api/devices/$id/commands")
+            .get()
+            .build()
+
+        client.newCall(req).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                // Silent fail - command polling is not critical
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                if (!response.isSuccessful) return
+
+                try {
+                    val resp = response.body?.string() ?: return
+                    val obj = JSONObject(resp)
+                    val commands = obj.getJSONArray("commands")
+
+                    for (i in 0 until commands.length()) {
+                        val command = commands.getJSONObject(i)
+                        val type = command.getString("type")
+
+                        when (type) {
+                            "screenshot_request" -> {
+                                Log.i("GeekDS", "Received screenshot request via polling")
+                                takeScreenshot()
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w("GeekDS", "Error processing commands: $e")
+                }
+            }
+        })
     }
 
     private fun debugScheduleInfo() {
@@ -1505,6 +1837,7 @@ class MainActivity : Activity() {
                 Log.i("GeekDS", "Creating new PlayerView")
                 playerView = PlayerView(this@MainActivity).apply {
                     useController = false
+                    // IMPORTANT: For screenshot compatibility, we'll handle this in layout
                     player = this@MainActivity.player
                     layoutParams = ViewGroup.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
@@ -1785,6 +2118,214 @@ class MainActivity : Activity() {
         val prefs = context.getSharedPreferences("geekds_prefs", Context.MODE_PRIVATE)
         val json = prefs.getString("playlist", null) ?: return null
         return Gson().fromJson(json, Playlist::class.java)
+    }
+
+    // WebSocket connection management
+    // Screenshot functionality - Enhanced to capture video content
+    private fun takeScreenshot() {
+        Log.d("GeekDS", "Taking screenshot...")
+        
+        // Run on UI thread to access views properly
+        runOnUiThread {
+            try {
+                // Get the root view
+                val rootView = when {
+                    rootContainer != null -> rootContainer!!
+                    window?.decorView?.rootView != null -> window.decorView.rootView
+                    else -> {
+                        Log.e("GeekDS", "No root view available for screenshot")
+                        return@runOnUiThread
+                    }
+                }
+                
+                Log.d("GeekDS", "Root view dimensions: ${rootView.width}x${rootView.height}")
+                
+                // Ensure the view is laid out and has valid dimensions
+                if (rootView.width <= 0 || rootView.height <= 0) {
+                    Log.e("GeekDS", "Root view has invalid dimensions")
+                    return@runOnUiThread
+                }
+                
+                // Check if we're playing video
+                val currentPlayerView = playerView
+                val isPlayingVideo = currentPlayerView != null && player?.isPlaying == true
+                
+                Log.d("GeekDS", "Is playing video: $isPlayingVideo")
+                
+                if (isPlayingVideo && currentPlayerView != null) {
+                    // For video playback, try to capture the video surface
+                    captureVideoScreenshot(currentPlayerView, rootView)
+                } else {
+                    // For standby mode, use regular view drawing
+                    captureRegularScreenshot(rootView)
+                }
+                
+            } catch (e: Exception) {
+                Log.e("GeekDS", "Error taking screenshot", e)
+            }
+        }
+    }
+    
+    private fun captureRegularScreenshot(rootView: View) {
+        try {
+            // Create bitmap for regular screenshot
+            val bitmap = Bitmap.createBitmap(
+                rootView.width, 
+                rootView.height, 
+                Bitmap.Config.ARGB_8888
+            )
+            
+            val canvas = Canvas(bitmap)
+            canvas.drawColor(Color.BLACK)
+            rootView.draw(canvas)
+            
+            Log.d("GeekDS", "Regular screenshot captured: ${bitmap.width}x${bitmap.height}")
+            
+            uploadProcessedScreenshot(bitmap)
+            
+        } catch (e: Exception) {
+            Log.e("GeekDS", "Error in regular screenshot", e)
+        }
+    }
+    
+    private fun captureVideoScreenshot(playerView: PlayerView, rootView: View) {
+        try {
+            // For video, we need to find the TextureView or SurfaceView inside PlayerView
+            val videoView = findVideoSurface(playerView)
+            
+            if (videoView is TextureView) {
+                // TextureView can be captured directly
+                val videoBitmap = videoView.getBitmap()
+                if (videoBitmap != null) {
+                    Log.d("GeekDS", "Video screenshot captured from TextureView: ${videoBitmap.width}x${videoBitmap.height}")
+                    uploadProcessedScreenshot(videoBitmap)
+                    return
+                }
+            }
+            
+            // Fallback: capture the whole view (might show black for SurfaceView)
+            Log.d("GeekDS", "Fallback to regular screenshot (video may appear black)")
+            captureRegularScreenshot(rootView)
+            
+        } catch (e: Exception) {
+            Log.e("GeekDS", "Error in video screenshot", e)
+            // Fallback to regular screenshot
+            captureRegularScreenshot(rootView)
+        }
+    }
+    
+    private fun findVideoSurface(viewGroup: View): View? {
+        if (viewGroup is TextureView || viewGroup is SurfaceView) {
+            return viewGroup
+        }
+        
+        if (viewGroup is ViewGroup) {
+            for (i in 0 until viewGroup.childCount) {
+                val child = viewGroup.getChildAt(i)
+                val result = findVideoSurface(child)
+                if (result != null) return result
+            }
+        }
+        
+        return null
+    }
+    
+    private fun uploadProcessedScreenshot(bitmap: Bitmap) {
+        // Scale down to reasonable size for upload
+        val maxWidth = 1280
+        val maxHeight = 720
+        
+        val scaledBitmap = if (bitmap.width > maxWidth || bitmap.height > maxHeight) {
+            val scale = min(
+                maxWidth.toFloat() / bitmap.width,
+                maxHeight.toFloat() / bitmap.height
+            )
+            val newWidth = (bitmap.width * scale).toInt()
+            val newHeight = (bitmap.height * scale).toInt()
+            
+            Log.d("GeekDS", "Scaling bitmap from ${bitmap.width}x${bitmap.height} to ${newWidth}x${newHeight}")
+            Bitmap.createScaledBitmap(bitmap, newWidth, newHeight, true)
+        } else {
+            bitmap
+        }
+        
+        // Upload in background thread
+        scope.launch(Dispatchers.IO) {
+            uploadScreenshot(scaledBitmap)
+            
+            // Clean up bitmaps
+            if (scaledBitmap != bitmap) {
+                bitmap.recycle()
+            }
+            scaledBitmap.recycle()
+        }
+    }
+
+    private fun uploadScreenshot(bitmap: Bitmap) {
+        try {
+            Log.d("GeekDS", "Starting screenshot upload, bitmap: ${bitmap.width}x${bitmap.height}")
+            
+            // Convert bitmap to byte array with better compression
+            val outputStream = ByteArrayOutputStream()
+            
+            // Use JPEG for better compression, quality 85 for good balance
+            val compressed = bitmap.compress(Bitmap.CompressFormat.JPEG, 85, outputStream)
+            
+            if (!compressed) {
+                Log.e("GeekDS", "Failed to compress bitmap to JPEG")
+                return
+            }
+            
+            val imageBytes = outputStream.toByteArray()
+            outputStream.close()
+            
+            Log.d("GeekDS", "Screenshot compressed: ${imageBytes.size / 1024}KB")
+            
+            if (imageBytes.isEmpty()) {
+                Log.e("GeekDS", "Screenshot bytes are empty after compression!")
+                return
+            }
+            
+            if (imageBytes.size < 1000) {
+                Log.w("GeekDS", "Screenshot suspiciously small: ${imageBytes.size} bytes")
+            }
+            
+            // Create multipart request
+            val requestBody = MultipartBody.Builder()
+                .setType(MultipartBody.FORM)
+                .addFormDataPart(
+                    "screenshot",
+                    "screenshot_${System.currentTimeMillis()}.jpg",
+                    RequestBody.create("image/jpeg".toMediaTypeOrNull(), imageBytes)
+                )
+                .build()
+            
+            val request = Request.Builder()
+                .url("$cmsUrl/api/devices/$deviceId/screenshot/upload")
+                .post(requestBody)
+                .build()
+            
+            Log.d("GeekDS", "Sending screenshot upload request...")
+            
+            client.newCall(request).enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    Log.e("GeekDS", "Failed to upload screenshot", e)
+                }
+                
+                override fun onResponse(call: Call, response: Response) {
+                    val responseBody = response.body?.string()
+                    
+                    if (response.isSuccessful) {
+                        Log.i("GeekDS", "Screenshot uploaded successfully: $responseBody")
+                    } else {
+                        Log.e("GeekDS", "Failed to upload screenshot: ${response.code} - $responseBody")
+                    }
+                }
+            })
+            
+        } catch (e: Exception) {
+            Log.e("GeekDS", "Error in uploadScreenshot", e)
+        }
     }
 }
 

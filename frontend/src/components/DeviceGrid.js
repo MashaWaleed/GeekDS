@@ -45,8 +45,20 @@ import {
   Add as AddIcon,
   Edit as EditIcon,
   Delete as DeleteIcon,
-  QrCode as QrCodeIcon
+  QrCode as QrCodeIcon,
+  CameraAlt as CameraIcon
 } from '@mui/icons-material';
+
+// Add CSS for loading animation
+const style = document.createElement('style');
+style.textContent = `
+  @keyframes loading {
+    0% { transform: translateX(-100%); }
+    50% { transform: translateX(0%); }
+    100% { transform: translateX(100%); }
+  }
+`;
+document.head.appendChild(style);
 
 function DeviceGrid() {
   const [devices, setDevices] = useState([]);
@@ -71,6 +83,12 @@ function DeviceGrid() {
   const [editDevice, setEditDevice] = useState(null);
   const [deviceToDelete, setDeviceToDelete] = useState(null);
   const [snackbar, setSnackbar] = useState({ open: false, message: '', severity: 'info' });
+
+  // NEW: Screenshot state
+  const [screenshotOpen, setScreenshotOpen] = useState(false);
+  const [screenshotDevice, setScreenshotDevice] = useState(null);
+  const [screenshotUrl, setScreenshotUrl] = useState(null);
+  const [screenshotLoading, setScreenshotLoading] = useState(false);
 
   const API_URL = process.env.REACT_APP_API_URL;
 
@@ -182,6 +200,69 @@ function DeviceGrid() {
       console.error('Error deleting device:', error);
       setSnackbar({ open: true, message: 'Network error during deletion', severity: 'error' });
     }
+  };
+
+  // NEW: Screenshot handlers
+  const handleTakeScreenshot = async (device) => {
+    if (device.status !== 'online') {
+      setSnackbar({ open: true, message: 'Device must be online to take screenshot', severity: 'error' });
+      return;
+    }
+
+    setScreenshotDevice(device);
+    setScreenshotOpen(true);
+    setScreenshotLoading(true);
+    setScreenshotUrl(null);
+
+    try {
+      // Request screenshot from device
+      const response = await fetch(`${API_URL}/api/devices/${device.id}/screenshot`, {
+        method: 'POST',
+      });
+
+      const data = await response.json();
+      
+      if (response.ok) {
+        setSnackbar({ open: true, message: 'Screenshot request sent to device...', severity: 'info' });
+        // Start polling for screenshot
+        pollForScreenshot(device.id);
+      } else {
+        setSnackbar({ open: true, message: data.error || 'Failed to request screenshot', severity: 'error' });
+        setScreenshotLoading(false);
+      }
+    } catch (error) {
+      console.error('Error requesting screenshot:', error);
+      setSnackbar({ open: true, message: 'Network error during screenshot request', severity: 'error' });
+      setScreenshotLoading(false);
+    }
+  };
+
+  // Poll for screenshot availability
+  const pollForScreenshot = (deviceId) => {
+    const pollInterval = setInterval(async () => {
+      try {
+        const response = await fetch(`${API_URL}/api/devices/${deviceId}/screenshot/status`);
+        const data = await response.json();
+        
+        if (response.ok && data.available) {
+          // Screenshot is ready, get it
+          setScreenshotUrl(`${API_URL}/api/devices/${deviceId}/screenshot/latest?t=${Date.now()}`);
+          setScreenshotLoading(false);
+          clearInterval(pollInterval);
+        }
+      } catch (error) {
+        console.error('Error polling for screenshot:', error);
+      }
+    }, 2000); // Poll every 2 seconds
+
+    // Stop polling after 30 seconds
+    setTimeout(() => {
+      clearInterval(pollInterval);
+      if (screenshotLoading) {
+        setScreenshotLoading(false);
+        setSnackbar({ open: true, message: 'Screenshot request timed out', severity: 'warning' });
+      }
+    }, 30000);
   };
 
   useEffect(() => {
@@ -307,13 +388,23 @@ function DeviceGrid() {
               variant="outlined"
               size="small"
               startIcon={<SendIcon />}
-              fullWidth
               onClick={() => {
                 setCmdDevice(device.id);
                 setCmdOpen(true);
               }}
+              sx={{ flex: 1 }}
             >
-              Send Command
+              Command
+            </Button>
+            <Button
+              variant="outlined"
+              size="small"
+              startIcon={<CameraIcon />}
+              onClick={() => handleTakeScreenshot(device)}
+              disabled={device.status !== 'online'}
+              sx={{ flex: 1 }}
+            >
+              Screenshot
             </Button>
           </Box>
           
@@ -688,6 +779,84 @@ function DeviceGrid() {
           >
             Delete Device
           </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Screenshot Dialog */}
+      <Dialog 
+        open={screenshotOpen} 
+        onClose={() => setScreenshotOpen(false)} 
+        maxWidth="md" 
+        fullWidth
+      >
+        <DialogTitle>
+          Device Screenshot - {screenshotDevice?.name}
+        </DialogTitle>
+        <DialogContent>
+          {screenshotLoading ? (
+            <Box 
+              display="flex" 
+              flexDirection="column" 
+              alignItems="center" 
+              justifyContent="center" 
+              py={4}
+            >
+              <Typography variant="body1" sx={{ mb: 2 }}>
+                Taking screenshot...
+              </Typography>
+              <Box sx={{ width: '100%', maxWidth: 300 }}>
+                <div style={{ 
+                  width: '100%', 
+                  height: '4px', 
+                  backgroundColor: '#e0e0e0', 
+                  borderRadius: '2px',
+                  overflow: 'hidden'
+                }}>
+                  <div style={{
+                    width: '100%',
+                    height: '100%',
+                    backgroundColor: '#2196f3',
+                    animation: 'loading 2s ease-in-out infinite'
+                  }} />
+                </div>
+              </Box>
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                This may take a few seconds...
+              </Typography>
+            </Box>
+          ) : screenshotUrl ? (
+            <Box textAlign="center">
+              <img 
+                src={screenshotUrl} 
+                alt="Device Screenshot" 
+                style={{ 
+                  maxWidth: '100%', 
+                  maxHeight: '70vh', 
+                  border: '1px solid #ddd',
+                  borderRadius: '4px'
+                }} 
+              />
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                Screenshot taken: {new Date().toLocaleTimeString()}
+              </Typography>
+            </Box>
+          ) : (
+            <Typography variant="body1" color="text.secondary">
+              No screenshot available
+            </Typography>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setScreenshotOpen(false)}>Close</Button>
+          {screenshotUrl && (
+            <Button 
+              onClick={() => handleTakeScreenshot(screenshotDevice)}
+              variant="outlined"
+              startIcon={<CameraIcon />}
+            >
+              Take New Screenshot
+            </Button>
+          )}
         </DialogActions>
       </Dialog>
 
