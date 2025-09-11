@@ -86,7 +86,7 @@ class MainActivity : Activity() {
     private var lastSuccessfulConnection: Long = 0
     private var connectionFailureCount = 0
     private var isNetworkAvailable = false
-    
+
     // Add timing for log throttling
     private var lastScheduleLogTime = 0L
     private var lastPlaylistLogTime = 0L
@@ -127,12 +127,29 @@ class MainActivity : Activity() {
             // Update server URL if provided
             config.optString("server_mdns")?.let { url ->
                 if (url.isNotEmpty()) {
-                    cmsUrl = url
+                    // Ensure URL has proper scheme
+                    cmsUrl = if (url.startsWith("http://") || url.startsWith("https://")) {
+                        url
+                    } else {
+                        "http://$url"
+                    }
                     Log.i("GeekDS", "Loaded server URL from config: $cmsUrl")
                 }
             }
         } ?: run {
             Log.w("GeekDS", "No external config found, using defaults: name='$deviceName', url='$cmsUrl'")
+        }
+        
+        // Validate the final URL
+        try {
+            val testUrl = "$cmsUrl/api/test"
+            Log.i("GeekDS", "Final CMS URL configured: $cmsUrl")
+            Log.d("GeekDS", "Test URL would be: $testUrl")
+        } catch (e: Exception) {
+            Log.e("GeekDS", "Invalid CMS URL configured: $cmsUrl", e)
+            // Fallback to default
+            cmsUrl = "http://192.168.1.212:5000"
+            Log.w("GeekDS", "Using fallback URL: $cmsUrl")
         }
         // Create a root container that can hold both standby image and player
         rootContainer = LinearLayout(this).apply {
@@ -161,13 +178,13 @@ class MainActivity : Activity() {
         setupWakeLock()
 
         deviceId = loadDeviceId()
-        
+
         // Load device name from saved preferences if available
         loadDeviceName()?.let { savedName ->
             deviceName = savedName
             Log.i("GeekDS", "Loaded saved device name: '$deviceName'")
         }
-        
+
         if (deviceId != null) {
             setState(State.IDLE, "Loaded device $deviceId (name: '$deviceName')")
             startBackgroundTasks()
@@ -179,18 +196,18 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        
+
         // Stop registration polling
         stopRegistrationPolling()
-        
+
         // Dismiss any dialogs
         currentRegistrationDialog?.dismiss()
-        
+
         // Clean up player
         player?.release()
         player = null
         standbyImageView = null
-        
+
         // Clean up coroutines
         scope.cancel()
         scheduleEnforcerJob?.cancel()
@@ -291,15 +308,15 @@ class MainActivity : Activity() {
         }
     }
 
-    // Enhanced connection checking
+    // Enhanced connection checking - LAN-only compatible
     private fun isNetworkConnected(): Boolean {
         return try {
             val connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
             val activeNetwork = connectivityManager.activeNetwork ?: return false
             val networkCapabilities = connectivityManager.getNetworkCapabilities(activeNetwork) ?: return false
 
-            networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-                    networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+            // Only check for internet capability, not validation (allows LAN-only networks)
+            networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
         } catch (e: Exception) {
             Log.e("GeekDS", "Error checking network connection", e)
             false
@@ -571,8 +588,12 @@ class MainActivity : Activity() {
         val body = RequestBody.create(
             "application/json".toMediaTypeOrNull(), json.toString()
         )
+        
+        val urlString = "$cmsUrl/api/devices/$id"
+        Log.d("GeekDS", "Building heartbeat request to: $urlString")
+        
         val req = Request.Builder()
-            .url("$cmsUrl/api/devices/$id")
+            .url(urlString)
             .patch(body)
             .build()
 
@@ -587,14 +608,14 @@ class MainActivity : Activity() {
                         // Successful heartbeat - extract device info from response
                         lastSuccessfulConnection = System.currentTimeMillis()
                         connectionFailureCount = 0
-                        
+
                         // Check if server returned updated device info
                         try {
                             val responseBody = response.body?.string()
                             if (responseBody != null) {
                                 val deviceInfo = JSONObject(responseBody)
                                 val serverDeviceName = deviceInfo.getString("name")
-                                
+
                                 // Update device name if it changed in CMS
                                 if (serverDeviceName != deviceName) {
                                     deviceName = serverDeviceName
@@ -606,7 +627,7 @@ class MainActivity : Activity() {
                             // Not critical if we can't parse response - just log and continue
                             Log.w("GeekDS", "Could not parse heartbeat response for device info: ${e.message}")
                         }
-                        
+
                         setState(State.IDLE, "Heartbeat sent for device $id (name: $deviceName, ip: $currentIp)")
                         Log.d("GeekDS", "Heartbeat sent with updated device info - name: '$deviceName', ip: '$currentIp'")
                     }
@@ -631,11 +652,11 @@ class MainActivity : Activity() {
             putInt("device_id", -1) // Use -1 as invalid device ID
             apply()
         }
-        
+
         // Also clear from main prefs and reset device name
         getSharedPreferences("geekds_prefs", MODE_PRIVATE).edit().clear().apply()
         deviceName = "ARC-A-GR-18" // Reset to default
-        
+
         // Stop all background activities
         stopAllActivities()
     }
@@ -644,7 +665,7 @@ class MainActivity : Activity() {
         try {
             // Cancel all background jobs gracefully
             scheduleEnforcerJob?.cancel()
-            
+
             // Use a new scope for stopping activities to avoid cancellation issues
             runOnUiThread {
                 try {
@@ -653,19 +674,19 @@ class MainActivity : Activity() {
                     player?.release()
                     player = null
                     playerView = null
-                    
+
                     // Show standby screen
                     showStandby()
-                    
+
                     Log.i("GeekDS", "All activities stopped for re-registration")
                 } catch (e: Exception) {
                     Log.e("GeekDS", "Error stopping activities", e)
                 }
             }
-            
+
             // Cancel background jobs after UI cleanup
             scope.coroutineContext.cancelChildren()
-            
+
         } catch (e: Exception) {
             Log.e("GeekDS", "Error in stopAllActivities", e)
         }
@@ -676,10 +697,10 @@ class MainActivity : Activity() {
             // Stop all activities first
             stopAllActivities()
             setState(State.REGISTERING, "Device needs registration...")
-            
+
             // Show registration dialog immediately while requesting code
             showWaitingDialog()
-            
+
             // Request a registration code from the server
             requestRegistrationCode()
         }
@@ -698,7 +719,7 @@ class MainActivity : Activity() {
 
     private fun requestRegistrationCode() {
         val currentIp = getLocalIpAddress() ?: "unknown"
-        
+
         val json = JSONObject().apply {
             put("ip", currentIp)
         }
@@ -720,12 +741,12 @@ class MainActivity : Activity() {
 
             override fun onResponse(call: Call, response: Response) {
                 val responseBody = response.body?.string()
-                
+
                 if (response.isSuccessful && responseBody != null) {
                     try {
                         val jsonResponse = JSONObject(responseBody)
                         val code = jsonResponse.getString("code")
-                        
+
                         runOnUiThread {
                             showRegistrationDialog(code)
                             startRegistrationPolling(currentIp)
@@ -765,13 +786,13 @@ class MainActivity : Activity() {
     private fun startRegistrationPolling(ip: String) {
         // Stop any existing polling
         registrationPollingRunnable?.let { handler.removeCallbacks(it) }
-        
+
         registrationPollingRunnable = object : Runnable {
             override fun run() {
                 checkRegistrationStatus(ip, this)
             }
         }
-        
+
         // Start polling immediately, then every 2 seconds
         registrationPollingRunnable?.let { handler.post(it) }
     }
@@ -797,33 +818,33 @@ class MainActivity : Activity() {
 
             override fun onResponse(call: Call, response: Response) {
                 val responseBody = response.body?.string()
-                
+
                 if (response.isSuccessful && responseBody != null) {
                     try {
                         val jsonResponse = JSONObject(responseBody)
                         val registered = jsonResponse.getBoolean("registered")
-                        
+
                         if (registered) {
                             val deviceJson = jsonResponse.getJSONObject("device")
                             val newDeviceId = deviceJson.getInt("id")
                             val newDeviceName = deviceJson.getString("name")
-                            
+
                             runOnUiThread {
                                 stopRegistrationPolling()
                                 currentRegistrationDialog?.dismiss()
-                                
+
                                 deviceId = newDeviceId
                                 saveDeviceId(newDeviceId)
-                                
+
                                 // Update device name from server
                                 deviceName = newDeviceName
                                 saveDeviceName(newDeviceName)
-                                
+
                                 setState(State.IDLE, "Device registered successfully - ID: $newDeviceId, Name: '$newDeviceName'")
-                                
+
                                 // Start normal operations immediately
                                 startBackgroundTasks()
-                                
+
                                 Log.i("GeekDS", "Registration completed! Device ID: $newDeviceId, Name: '$newDeviceName'")
                             }
                         } else {
@@ -875,7 +896,7 @@ class MainActivity : Activity() {
     private fun showNetworkInfo() {
         val ip = getLocalIpAddress() ?: "No IP"
         val networkConnected = isNetworkConnected()
-        
+
         currentRegistrationDialog?.dismiss()
         currentRegistrationDialog = AlertDialog.Builder(this)
             .setTitle("Network Information")
@@ -1007,7 +1028,7 @@ class MainActivity : Activity() {
                                 // Update timestamps before fetching
                                 lastScheduleTimestamp = scheduleTimestamp
                                 lastPlaylistTimestamp = playlistTimestamp
-                                
+
                                 val playlistId = activeSchedule.getInt("playlist_id")
 
                                 val schedule = Schedule(
@@ -1346,8 +1367,13 @@ class MainActivity : Activity() {
         }
 
         Log.i("GeekDS", "Starting download: $filename")
+        
+        // URL encode the filename to handle spaces and special characters
+        val encodedFilename = java.net.URLEncoder.encode(filename, "UTF-8").replace("+", "%20")
+        Log.d("GeekDS", "Encoded filename: $encodedFilename")
+        
         val req = Request.Builder()
-            .url("$cmsUrl/api/media/$filename")
+            .url("$cmsUrl/api/media/$encodedFilename")
             .get()
             .build()
         client.newCall(req).enqueue(object : Callback {
@@ -1373,28 +1399,28 @@ class MainActivity : Activity() {
                     // Write to a temporary file first
                     val tempFile = File(file.parent, "${filename}.tmp")
                     val sink = FileOutputStream(tempFile)
-                    
+
                     val inputStream = responseBody.byteStream()
                     val buffer = ByteArray(8192)
                     var bytesRead: Int
                     var totalBytes = 0L
-                    
+
                     while (inputStream.read(buffer).also { bytesRead = it } != -1) {
                         sink.write(buffer, 0, bytesRead)
                         totalBytes += bytesRead
                     }
-                    
+
                     // Ensure all data is written and flushed
                     sink.flush()
                     sink.close()
                     inputStream.close()
-                    
+
                     // Verify the download completed successfully
                     if (tempFile.exists() && tempFile.length() > 0) {
                         // Move temp file to final location
                         if (tempFile.renameTo(file)) {
                             Log.i("GeekDS", "Download completed: $filename (${totalBytes} bytes)")
-                            
+
                             // Double-check the final file
                             if (file.exists() && file.length() == totalBytes && file.canRead()) {
                                 callback(true)
@@ -1428,8 +1454,11 @@ class MainActivity : Activity() {
         val file = File(getExternalFilesDir(null), filename)
         if (file.exists()) return // Already downloaded
 
+        // URL encode the filename to handle spaces and special characters
+        val encodedFilename = java.net.URLEncoder.encode(filename, "UTF-8").replace("+", "%20")
+        
         val req = Request.Builder()
-            .url("$cmsUrl/api/media/$filename")
+            .url("$cmsUrl/api/media/$encodedFilename")
             .get()
             .build()
         client.newCall(req).enqueue(object : Callback {
@@ -1620,7 +1649,7 @@ class MainActivity : Activity() {
                 Log.w("GeekDS", "enforceSchedule: No schedule loaded")
                 lastScheduleLogTime = now
             }
-            
+
             // If no schedule, ensure playback is stopped
             if (isPlaylistActive) {
                 Log.i("GeekDS", "*** STOPPING PLAYBACK *** - no schedule available")
@@ -1630,15 +1659,15 @@ class MainActivity : Activity() {
             }
             return
         }
-        
+
         val playlist = loadPlaylist(this) ?: run {
-            // Only log once per minute to avoid spam  
+            // Only log once per minute to avoid spam
             val now = System.currentTimeMillis()
             if (now - lastPlaylistLogTime > 60000L) {
                 Log.w("GeekDS", "enforceSchedule: No playlist loaded")
                 lastPlaylistLogTime = now
             }
-            
+
             // If no playlist, ensure playback is stopped
             if (isPlaylistActive) {
                 Log.i("GeekDS", "*** STOPPING PLAYBACK *** - no playlist available")
@@ -1794,9 +1823,9 @@ class MainActivity : Activity() {
                 val exists = file.exists()
                 val size = if (exists) file.length() else 0
                 val canRead = if (exists) file.canRead() else false
-                
+
                 Log.i("GeekDS", "File check: ${mediaFile.filename}, exists=$exists, size=$size, canRead=$canRead, path=${file.absolutePath}")
-                
+
                 // File must exist, have content, and be readable
                 exists && size > 0 && canRead
             }
@@ -1851,7 +1880,7 @@ class MainActivity : Activity() {
                 // Build MediaItem list from available files only
                 val mediaItems = availableFiles.map { mediaFile ->
                     val file = File(getExternalFilesDir(null), mediaFile.filename)
-                    
+
                     // Use Android Uri.fromFile() instead of file.toURI().toString() for better compatibility
                     val uri = android.net.Uri.fromFile(file)
                     Log.i("GeekDS", "Adding MediaItem: $uri (file size: ${file.length()})")
@@ -2124,7 +2153,7 @@ class MainActivity : Activity() {
     // Screenshot functionality - Enhanced to capture video content
     private fun takeScreenshot() {
         Log.d("GeekDS", "Taking screenshot...")
-        
+
         // Run on UI thread to access views properly
         runOnUiThread {
             try {
@@ -2137,21 +2166,21 @@ class MainActivity : Activity() {
                         return@runOnUiThread
                     }
                 }
-                
+
                 Log.d("GeekDS", "Root view dimensions: ${rootView.width}x${rootView.height}")
-                
+
                 // Ensure the view is laid out and has valid dimensions
                 if (rootView.width <= 0 || rootView.height <= 0) {
                     Log.e("GeekDS", "Root view has invalid dimensions")
                     return@runOnUiThread
                 }
-                
+
                 // Check if we're playing video
                 val currentPlayerView = playerView
                 val isPlayingVideo = currentPlayerView != null && player?.isPlaying == true
-                
+
                 Log.d("GeekDS", "Is playing video: $isPlayingVideo")
-                
+
                 if (isPlayingVideo && currentPlayerView != null) {
                     // For video playback, try to capture the video surface
                     captureVideoScreenshot(currentPlayerView, rootView)
@@ -2159,40 +2188,40 @@ class MainActivity : Activity() {
                     // For standby mode, use regular view drawing
                     captureRegularScreenshot(rootView)
                 }
-                
+
             } catch (e: Exception) {
                 Log.e("GeekDS", "Error taking screenshot", e)
             }
         }
     }
-    
+
     private fun captureRegularScreenshot(rootView: View) {
         try {
             // Create bitmap for regular screenshot
             val bitmap = Bitmap.createBitmap(
-                rootView.width, 
-                rootView.height, 
+                rootView.width,
+                rootView.height,
                 Bitmap.Config.ARGB_8888
             )
-            
+
             val canvas = Canvas(bitmap)
             canvas.drawColor(Color.BLACK)
             rootView.draw(canvas)
-            
+
             Log.d("GeekDS", "Regular screenshot captured: ${bitmap.width}x${bitmap.height}")
-            
+
             uploadProcessedScreenshot(bitmap)
-            
+
         } catch (e: Exception) {
             Log.e("GeekDS", "Error in regular screenshot", e)
         }
     }
-    
+
     private fun captureVideoScreenshot(playerView: PlayerView, rootView: View) {
         try {
             // For video, we need to find the TextureView or SurfaceView inside PlayerView
             val videoView = findVideoSurface(playerView)
-            
+
             if (videoView is TextureView) {
                 // TextureView can be captured directly
                 val videoBitmap = videoView.getBitmap()
@@ -2202,23 +2231,23 @@ class MainActivity : Activity() {
                     return
                 }
             }
-            
+
             // Fallback: capture the whole view (might show black for SurfaceView)
             Log.d("GeekDS", "Fallback to regular screenshot (video may appear black)")
             captureRegularScreenshot(rootView)
-            
+
         } catch (e: Exception) {
             Log.e("GeekDS", "Error in video screenshot", e)
             // Fallback to regular screenshot
             captureRegularScreenshot(rootView)
         }
     }
-    
+
     private fun findVideoSurface(viewGroup: View): View? {
         if (viewGroup is TextureView || viewGroup is SurfaceView) {
             return viewGroup
         }
-        
+
         if (viewGroup is ViewGroup) {
             for (i in 0 until viewGroup.childCount) {
                 val child = viewGroup.getChildAt(i)
@@ -2226,15 +2255,15 @@ class MainActivity : Activity() {
                 if (result != null) return result
             }
         }
-        
+
         return null
     }
-    
+
     private fun uploadProcessedScreenshot(bitmap: Bitmap) {
         // Scale down to reasonable size for upload
         val maxWidth = 1280
         val maxHeight = 720
-        
+
         val scaledBitmap = if (bitmap.width > maxWidth || bitmap.height > maxHeight) {
             val scale = min(
                 maxWidth.toFloat() / bitmap.width,
@@ -2242,17 +2271,17 @@ class MainActivity : Activity() {
             )
             val newWidth = (bitmap.width * scale).toInt()
             val newHeight = (bitmap.height * scale).toInt()
-            
+
             Log.d("GeekDS", "Scaling bitmap from ${bitmap.width}x${bitmap.height} to ${newWidth}x${newHeight}")
             Bitmap.createScaledBitmap(bitmap, newWidth, newHeight, true)
         } else {
             bitmap
         }
-        
+
         // Upload in background thread
         scope.launch(Dispatchers.IO) {
             uploadScreenshot(scaledBitmap)
-            
+
             // Clean up bitmaps
             if (scaledBitmap != bitmap) {
                 bitmap.recycle()
@@ -2264,32 +2293,32 @@ class MainActivity : Activity() {
     private fun uploadScreenshot(bitmap: Bitmap) {
         try {
             Log.d("GeekDS", "Starting screenshot upload, bitmap: ${bitmap.width}x${bitmap.height}")
-            
+
             // Convert bitmap to byte array with better compression
             val outputStream = ByteArrayOutputStream()
-            
+
             // Use JPEG for better compression, quality 85 for good balance
             val compressed = bitmap.compress(Bitmap.CompressFormat.JPEG, 85, outputStream)
-            
+
             if (!compressed) {
                 Log.e("GeekDS", "Failed to compress bitmap to JPEG")
                 return
             }
-            
+
             val imageBytes = outputStream.toByteArray()
             outputStream.close()
-            
+
             Log.d("GeekDS", "Screenshot compressed: ${imageBytes.size / 1024}KB")
-            
+
             if (imageBytes.isEmpty()) {
                 Log.e("GeekDS", "Screenshot bytes are empty after compression!")
                 return
             }
-            
+
             if (imageBytes.size < 1000) {
                 Log.w("GeekDS", "Screenshot suspiciously small: ${imageBytes.size} bytes")
             }
-            
+
             // Create multipart request
             val requestBody = MultipartBody.Builder()
                 .setType(MultipartBody.FORM)
@@ -2299,22 +2328,22 @@ class MainActivity : Activity() {
                     RequestBody.create("image/jpeg".toMediaTypeOrNull(), imageBytes)
                 )
                 .build()
-            
+
             val request = Request.Builder()
                 .url("$cmsUrl/api/devices/$deviceId/screenshot/upload")
                 .post(requestBody)
                 .build()
-            
+
             Log.d("GeekDS", "Sending screenshot upload request...")
-            
+
             client.newCall(request).enqueue(object : Callback {
                 override fun onFailure(call: Call, e: IOException) {
                     Log.e("GeekDS", "Failed to upload screenshot", e)
                 }
-                
+
                 override fun onResponse(call: Call, response: Response) {
                     val responseBody = response.body?.string()
-                    
+
                     if (response.isSuccessful) {
                         Log.i("GeekDS", "Screenshot uploaded successfully: $responseBody")
                     } else {
@@ -2322,10 +2351,9 @@ class MainActivity : Activity() {
                     }
                 }
             })
-            
+
         } catch (e: Exception) {
             Log.e("GeekDS", "Error in uploadScreenshot", e)
         }
     }
 }
-

@@ -333,10 +333,11 @@ function DeviceGrid() {
   };
 
   const renderDeviceCard = (device) => (
-    <Grid item xs={12} sm={6} md={4} key={device.id}>
+    <Grid item xs={12} sm={6} md={6} lg={4} key={device.id}>
       <Card 
         sx={{ 
           height: '100%',
+          minHeight: 250,
           border: device.status === 'online' ? '2px solid' : '1px solid',
           borderColor: device.status === 'online' ? 'success.main' : 'divider',
           '&:hover': { 
@@ -346,7 +347,7 @@ function DeviceGrid() {
           }
         }}
       >
-        <CardContent>
+        <CardContent sx={{ p: 3 }}>
           <Box display="flex" alignItems="center" mb={2}>
             <Avatar 
               sx={{ 

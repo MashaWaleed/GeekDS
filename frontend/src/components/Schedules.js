@@ -210,16 +210,17 @@ function Schedules() {
     const isCurrentActive = isCurrentlyActive(schedule);
     
     return (
-      <Grid item xs={12} sm={6} md={4} key={schedule.id}>
+      <Grid item xs={12} sm={6} md={6} lg={4} key={schedule.id}>
         <Card 
           sx={{ 
             height: '100%',
+            minHeight: 300,
             border: isCurrentActive ? '2px solid' : '1px solid',
             borderColor: isCurrentActive ? 'success.main' : 'divider',
             opacity: schedule.is_enabled ? 1 : 0.7
           }}
         >
-          <CardContent>
+          <CardContent sx={{ p: 3 }}>
             <Box display="flex" alignItems="center" mb={2}>
               <Avatar 
                 sx={{ 

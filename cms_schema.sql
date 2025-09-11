@@ -324,6 +324,44 @@ ALTER SEQUENCE public.schedules_id_seq OWNED BY public.schedules.id;
 
 
 --
+-- Name: screenshot_requests; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.screenshot_requests (
+    id integer NOT NULL,
+    device_id integer,
+    status text DEFAULT 'pending'::text,
+    requested_at timestamp without time zone DEFAULT now(),
+    completed_at timestamp without time zone,
+    processed_at timestamp without time zone
+);
+
+
+ALTER TABLE public.screenshot_requests OWNER TO postgres;
+
+--
+-- Name: screenshot_requests_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.screenshot_requests_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE public.screenshot_requests_id_seq OWNER TO postgres;
+
+--
+-- Name: screenshot_requests_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.screenshot_requests_id_seq OWNED BY public.screenshot_requests.id;
+
+
+--
 -- Name: device_commands id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
@@ -363,6 +401,13 @@ ALTER TABLE ONLY public.playlists ALTER COLUMN id SET DEFAULT nextval('public.pl
 --
 
 ALTER TABLE ONLY public.schedules ALTER COLUMN id SET DEFAULT nextval('public.schedules_id_seq'::regclass);
+
+
+--
+-- Name: screenshot_requests id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.screenshot_requests ALTER COLUMN id SET DEFAULT nextval('public.screenshot_requests_id_seq'::regclass);
 
 
 --
@@ -419,6 +464,14 @@ ALTER TABLE ONLY public.playlists
 
 ALTER TABLE ONLY public.schedules
     ADD CONSTRAINT schedules_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: screenshot_requests screenshot_requests_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.screenshot_requests
+    ADD CONSTRAINT screenshot_requests_pkey PRIMARY KEY (id);
 
 
 --
@@ -539,6 +592,14 @@ ALTER TABLE ONLY public.schedules
 
 ALTER TABLE ONLY public.schedules
     ADD CONSTRAINT schedules_playlist_id_fkey FOREIGN KEY (playlist_id) REFERENCES public.playlists(id) ON DELETE CASCADE;
+
+
+--
+-- Name: screenshot_requests screenshot_requests_device_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.screenshot_requests
+    ADD CONSTRAINT screenshot_requests_device_id_fkey FOREIGN KEY (device_id) REFERENCES public.devices(id) ON DELETE CASCADE;
 
 
 --

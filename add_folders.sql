@@ -45,3 +45,15 @@ INSERT INTO folders (name, type) VALUES
     ('Default Media', 'media'),
     ('Default Playlists', 'playlist')
 ON CONFLICT DO NOTHING;
+
+-- Create building folders for the hospital
+INSERT INTO folders (name, type, parent_id) VALUES 
+    ('ARC', 'media', NULL),
+    ('DEF', 'media', NULL), 
+    ('BED', 'media', NULL),
+    ('LED', 'media', NULL),
+    ('ARC', 'playlist', NULL),
+    ('DEF', 'playlist', NULL),
+    ('BED', 'playlist', NULL),
+    ('LED', 'playlist', NULL)
+ON CONFLICT DO NOTHING;

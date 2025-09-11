@@ -28,9 +28,21 @@ import Snackbar from '@mui/material/Snackbar';
 
 const theme = createTheme({
   palette: {
-    mode: 'light', // Light theme by default
-    primary: { main: '#1976d2' },
-    background: { default: '#f5f5f5', paper: '#fff' },
+    mode: 'light',
+    primary: { 
+      main: '#4CAF50',
+      light: '#81C784',
+      dark: '#388E3C'
+    },
+    secondary: {
+      main: '#2E7D32',
+      light: '#66BB6A',
+      dark: '#1B5E20'
+    },
+    background: { 
+      default: '#F1F8E9', 
+      paper: '#fff' 
+    },
   },
   typography: {
     fontFamily: 'Roboto, Arial',
@@ -62,8 +74,12 @@ function LoginPage({ onLogin }) {
     <Box sx={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f5f5f5' }}>
       <Paper elevation={3} sx={{ p: 4, minWidth: 320 }}>
         <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', mb: 2 }}>
-          <LockIcon color="primary" sx={{ fontSize: 40, mb: 1 }} />
-          <Typography variant="h5" gutterBottom>Admin Login</Typography>
+          <img 
+            src="/eternaHealthCareCity.png" 
+            alt="EternaHealthCareCity" 
+            style={{ height: 60, marginBottom: 16 }}
+          />
+          <Typography variant="h5" gutterBottom>EternaHealthCareCity Admin</Typography>
         </Box>
         <form onSubmit={handleSubmit}>
           <TextField label="Username" fullWidth margin="normal" value={username} onChange={e => setUsername(e.target.value)} autoFocus />
@@ -80,7 +96,19 @@ function AppContent({ onLogout }) {
   const navigate = useNavigate();
   return (
     <>
-      <Drawer variant="permanent" sx={{ width: 220, flexShrink: 0, [`& .MuiDrawer-paper`]: { width: 220, boxSizing: 'border-box', background: '#fff', color: '#222' } }}>
+      <Drawer variant="permanent" sx={{ width: 220, flexShrink: 0, [`& .MuiDrawer-paper`]: { width: 220, boxSizing: 'border-box', background: 'linear-gradient(180deg, #E8F5E8 0%, #F1F8E9 100%)', color: '#2E7D32' } }}>
+        {/* Logo Section at Top of Sidebar */}
+        <Box sx={{ p: 2, borderBottom: '1px solid #C8E6C9', textAlign: 'center' }}>
+          <img 
+            src="/eternaHealthCareCity.png" 
+            alt="EternaHealthCareCity" 
+            style={{ height: 50, maxWidth: '100%' }}
+          />
+          <Typography variant="caption" display="block" sx={{ mt: 1, color: 'text.secondary' }}>
+            Digital Signage CMS
+          </Typography>
+        </Box>
+        
         <List>
           {navItems.map(item => (
             <ListItem disablePadding key={item.path}>
@@ -98,10 +126,30 @@ function AppContent({ onLogout }) {
           </ListItem>
         </List>
       </Drawer>
-      <Container maxWidth="md" sx={{ mt: 8, ml: 28 }}>
-        <Typography variant="h3" align="center" gutterBottom>
-          Digital Signage CMS
-        </Typography>
+      <Container maxWidth={false} sx={{ mt: 8, ml: 28, mr: 4, maxWidth: 'calc(100vw - 280px)' }}>
+        <Box sx={{ 
+          display: 'flex', 
+          alignItems: 'center', 
+          justifyContent: 'center', 
+          mb: 4, 
+          background: 'linear-gradient(135deg, #4CAF50 0%, #2E7D32 100%)',
+          borderRadius: 3,
+          p: 3,
+          color: 'white',
+          boxShadow: '0 8px 32px rgba(76, 175, 80, 0.3)'
+        }}>
+          <Typography 
+            variant="h3" 
+            sx={{ 
+              fontWeight: 'bold',
+              textAlign: 'center',
+              textShadow: '2px 2px 4px rgba(0,0,0,0.3)',
+              letterSpacing: '1px'
+            }}
+          >
+            EternaHealth CMS
+          </Typography>
+        </Box>
         <Routes>
           <Route path="/" element={<DeviceGrid />} />
           <Route path="/media" element={<MediaManager />} />

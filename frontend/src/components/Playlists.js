@@ -282,9 +282,9 @@ function Playlists() {
     const stats = getPlaylistStats(playlist);
     
     return (
-      <Grid item xs={12} sm={6} md={4} key={playlist.id}>
-        <Card sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-          <CardContent sx={{ flexGrow: 1 }}>
+      <Grid item xs={12} sm={6} md={6} lg={4} key={playlist.id}>
+        <Card sx={{ height: '100%', minHeight: 280, display: 'flex', flexDirection: 'column' }}>
+          <CardContent sx={{ flexGrow: 1, p: 3 }}>
             <Box display="flex" alignItems="center" mb={2}>
               <Avatar sx={{ bgcolor: 'primary.main', mr: 2 }}>
                 <PlaylistPlayIcon />
