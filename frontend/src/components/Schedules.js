@@ -33,6 +33,7 @@ import {
   FormControl,
   InputLabel,
   Select,
+  Autocomplete,
   InputAdornment,
   Tooltip,
   Menu,
@@ -622,6 +623,11 @@ function Schedules() {
                 value={deviceFilter}
                 label="Device"
                 onChange={(e) => setDeviceFilter(e.target.value)}
+                MenuProps={{
+                  PaperProps: {
+                    style: { maxHeight: 200 }
+                  }
+                }}
               >
                 <MenuItem value="">All Devices</MenuItem>
                 {devices.map(device => (
@@ -640,6 +646,11 @@ function Schedules() {
                 value={statusFilter}
                 label="Status"
                 onChange={(e) => setStatusFilter(e.target.value)}
+                MenuProps={{
+                  PaperProps: {
+                    style: { maxHeight: 200 }
+                  }
+                }}
               >
                 <MenuItem value="all">All Status</MenuItem>
                 <MenuItem value="active">Active Only</MenuItem>
@@ -656,6 +667,11 @@ function Schedules() {
                 value={groupBy}
                 label="Group By"
                 onChange={(e) => setGroupBy(e.target.value)}
+                MenuProps={{
+                  PaperProps: {
+                    style: { maxHeight: 200 }
+                  }
+                }}
               >
                 <MenuItem value="none">No Grouping</MenuItem>
                 <MenuItem value="device">Device</MenuItem>
@@ -833,23 +849,45 @@ function Schedules() {
                 fullWidth
                 required
                 margin="normal"
+                SelectProps={{
+                  MenuProps: {
+                    PaperProps: {
+                      style: { maxHeight: 200 }
+                    }
+                  }
+                }}
               >
                 {devices.map(d => (<MenuItem key={d.id} value={d.id}>{d.name}</MenuItem>))}
               </TextField>
             </Grid>
 
             <Grid item xs={6}>
-              <TextField
-                select
-                label="Playlist"
-                value={playlistId}
-                onChange={e => setPlaylistId(e.target.value)}
-                fullWidth
-                required
-                margin="normal"
-              >
-                {playlists.map(p => (<MenuItem key={p.id} value={p.id}>{p.name}</MenuItem>))}
-              </TextField>
+              <Autocomplete
+                options={playlists}
+                getOptionLabel={(option) => option.name}
+                value={playlists.find(p => p.id.toString() === playlistId) || null}
+                onChange={(event, newValue) => {
+                  setPlaylistId(newValue ? newValue.id.toString() : '');
+                }}
+                renderInput={(params) => (
+                  <TextField
+                    {...params}
+                    label="Playlist"
+                    required
+                    margin="normal"
+                    fullWidth
+                  />
+                )}
+                ListboxProps={{
+                  style: { maxHeight: '200px' }
+                }}
+                noOptionsText="No playlists found"
+                filterOptions={(options, { inputValue }) =>
+                  options.filter(option =>
+                    option.name.toLowerCase().includes(inputValue.toLowerCase())
+                  )
+                }
+              />
             </Grid>
 
             {/* Time Slots */}

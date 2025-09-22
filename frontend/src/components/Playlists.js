@@ -57,7 +57,9 @@ import {
   ExpandLess as ExpandLessIcon,
   MoreVert as MoreVertIcon,
   FileCopy as CopyIcon,
-  Visibility as PreviewIcon
+  Visibility as PreviewIcon,
+  ViewList as ViewListIcon,
+  ViewModule as ViewModuleIcon
 } from '@mui/icons-material';
 
 function Playlists() {
@@ -80,6 +82,7 @@ function Playlists() {
   const [showMediaPreview, setShowMediaPreview] = useState(false);
   const [menuAnchor, setMenuAnchor] = useState(null);
   const [menuItem, setMenuItem] = useState(null);
+  const [viewMode, setViewMode] = useState('list'); // 'list' or 'grid'
 
   const API_URL = process.env.REACT_APP_API_URL;
 
@@ -337,6 +340,55 @@ function Playlists() {
     );
   };
 
+  const renderPlaylistTable = () => (
+    <TableContainer>
+      <Table size="small">
+        <TableHead>
+          <TableRow>
+            <TableCell>Name</TableCell>
+            <TableCell>Files</TableCell>
+            <TableCell>Duration</TableCell>
+            <TableCell>Folder</TableCell>
+            <TableCell>Updated</TableCell>
+            <TableCell align="right">Actions</TableCell>
+          </TableRow>
+        </TableHead>
+        <TableBody>
+          {filteredPlaylists.map(playlist => {
+            const stats = getPlaylistStats(playlist);
+            return (
+              <TableRow key={playlist.id} hover>
+                <TableCell>
+                  <Box display="flex" alignItems="center">
+                    <PlaylistPlayIcon sx={{ mr: 1, color: 'text.secondary' }} />
+                    {playlist.name}
+                  </Box>
+                </TableCell>
+                <TableCell>{stats.count}</TableCell>
+                <TableCell>{formatDuration(stats.duration)}</TableCell>
+                <TableCell>
+                  {playlist.folder_id ? 
+                    folders.find(f => f.id === playlist.folder_id)?.name || 'Unknown' : 
+                    'None'
+                  }
+                </TableCell>
+                <TableCell>{new Date(playlist.updated_at).toLocaleDateString()}</TableCell>
+                <TableCell align="right">
+                  <IconButton 
+                    size="small"
+                    onClick={(e) => handleMenuOpen(e, playlist)}
+                  >
+                    <MoreVertIcon />
+                  </IconButton>
+                </TableCell>
+              </TableRow>
+            );
+          })}
+        </TableBody>
+      </Table>
+    </TableContainer>
+  );
+
   return (
     <Box>
       {/* Header */}
@@ -390,6 +442,11 @@ function Playlists() {
                 value={selectedFolder}
                 label="Folder"
                 onChange={(e) => setSelectedFolder(e.target.value)}
+                MenuProps={{
+                  PaperProps: {
+                    style: { maxHeight: 200 }
+                  }
+                }}
               >
                 <MenuItem value="">All Folders</MenuItem>
                 <MenuItem value="none">No Folder</MenuItem>
@@ -407,6 +464,14 @@ function Playlists() {
 
           <Grid item xs={12} md={5}>
             <Box display="flex" gap={1} justifyContent="flex-end">
+              <Tooltip title={viewMode === 'grid' ? 'Switch to List View' : 'Switch to Grid View'}>
+                <IconButton 
+                  onClick={() => setViewMode(viewMode === 'grid' ? 'list' : 'grid')}
+                  color="primary"
+                >
+                  {viewMode === 'grid' ? <ViewListIcon /> : <ViewModuleIcon />}
+                </IconButton>
+              </Tooltip>
               <Button
                 variant="outlined"
                 startIcon={<FolderIcon />}
@@ -469,10 +534,12 @@ function Playlists() {
               </Button>
             )}
           </Box>
-        ) : (
+        ) : viewMode === 'grid' ? (
           <Grid container spacing={2}>
             {filteredPlaylists.map(renderPlaylistCard)}
           </Grid>
+        ) : (
+          renderPlaylistTable()
         )}
       </Paper>
 
@@ -540,6 +607,11 @@ function Playlists() {
                   value={selectedFolder}
                   label="Folder (Optional)"
                   onChange={(e) => setSelectedFolder(e.target.value)}
+                  MenuProps={{
+                    PaperProps: {
+                      style: { maxHeight: 200 }
+                    }
+                  }}
                 >
                   <MenuItem value="">No Folder</MenuItem>
                   {folders.map(folder => (
@@ -622,6 +694,11 @@ function Playlists() {
                       value={selectedMediaFolder}
                       label="Media Folder"
                       onChange={(e) => setSelectedMediaFolder(e.target.value)}
+                      MenuProps={{
+                        PaperProps: {
+                          style: { maxHeight: 200 }
+                        }
+                      }}
                     >
                       <MenuItem value="">All Folders</MenuItem>
                       <MenuItem value="none">No Folder</MenuItem>

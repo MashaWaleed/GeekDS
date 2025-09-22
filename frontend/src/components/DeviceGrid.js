@@ -605,6 +605,11 @@ function DeviceGrid() {
                 label="Status Filter"
                 onChange={(e) => setStatusFilter(e.target.value)}
                 startAdornment={<FilterIcon sx={{ mr: 1 }} />}
+                MenuProps={{
+                  PaperProps: {
+                    style: { maxHeight: 200 }
+                  }
+                }}
               >
                 <MenuItem value="all">All Devices</MenuItem>
                 <MenuItem value="online">Online Only</MenuItem>
