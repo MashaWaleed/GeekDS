@@ -333,7 +333,9 @@ CREATE TABLE public.screenshot_requests (
     status text DEFAULT 'pending'::text,
     requested_at timestamp without time zone DEFAULT now(),
     completed_at timestamp without time zone,
-    processed_at timestamp without time zone
+    processed_at timestamp without time zone,
+    screenshot_filename text,
+    error_message text
 );
 
 

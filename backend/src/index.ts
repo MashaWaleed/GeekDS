@@ -7,13 +7,20 @@ import playlistsRouter from './playlists';
 import schedulesRouter from './schedules';
 import commandsRouter from './commands';
 import foldersRouter from './folders';
+import { connectRedis } from './redis';
 import path from 'path';
 
 dotenv.config();
 
 const app = express();
+
+// Enable CORS for all origins
 app.use(cors());
+
 app.use(express.json());
+
+// Initialize Redis connection
+connectRedis().catch(console.error);
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok' });

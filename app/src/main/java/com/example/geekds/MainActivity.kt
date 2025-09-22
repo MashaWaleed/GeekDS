@@ -39,6 +39,7 @@ import android.graphics.Canvas
 import java.io.ByteArrayOutputStream
 import kotlin.math.min
 import android.view.View
+import android.media.MediaMetadataRetriever
 import android.view.TextureView
 import android.view.SurfaceView
 import kotlinx.coroutines.Dispatchers
@@ -59,7 +60,7 @@ import java.util.concurrent.TimeUnit
 
 class MainActivity : Activity() {
     private var deviceName: String = "ARC-A-GR-18" // Default fallback
-    private var cmsUrl: String = "http://192.168.1.212:5000" // Default fallback
+    private var cmsUrl: String = "http://192.168.1.10:5000" // Default fallback
     private var deviceId: Int? = null
 
     // Enhanced OkHttpClient with longer timeouts and retry
@@ -84,6 +85,7 @@ class MainActivity : Activity() {
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var lastSuccessfulConnection: Long = 0
+    private var registrationCheckAttempts = 0 // For smarter registration polling
     private var connectionFailureCount = 0
     private var isNetworkAvailable = false
 
@@ -102,6 +104,7 @@ class MainActivity : Activity() {
 
     private var player: ExoPlayer? = null
     private var playerView: PlayerView? = null
+    private var videoTextureView: TextureView? = null
 
     private var lastPlayedPlaylistId: Int? = null
     private var lastScheduleWindow: Pair<Long, Long>? = null
@@ -139,7 +142,7 @@ class MainActivity : Activity() {
         } ?: run {
             Log.w("GeekDS", "No external config found, using defaults: name='$deviceName', url='$cmsUrl'")
         }
-        
+
         // Validate the final URL
         try {
             val testUrl = "$cmsUrl/api/test"
@@ -458,7 +461,7 @@ class MainActivity : Activity() {
             debugScheduleInfo()
         }, 3000)
 
-        // Heartbeat every 2 minutes with network checking
+        // Heartbeat every 30 seconds with network checking (faster)
         scope.launch {
             while (isActive) {
                 try {
@@ -470,11 +473,11 @@ class MainActivity : Activity() {
                 } catch (e: Exception) {
                     Log.e("GeekDS", "Error in heartbeat loop", e)
                 }
-                delay(2 * 60 * 1000L)
+                delay(30 * 1000L)
             }
         }
 
-        // Schedule/playlist sync every 1 minute with network checking
+        // Schedule/playlist sync every 20 seconds with network checking (faster)
         scope.launch {
             while (isActive) {
                 try {
@@ -486,11 +489,11 @@ class MainActivity : Activity() {
                 } catch (e: Exception) {
                     Log.e("GeekDS", "Error in sync loop", e)
                 }
-                delay(1 * 60 * 1000L)
+                delay(20 * 1000L)
             }
         }
 
-        // Command polling every 30 seconds with network checking
+        // Command polling every 10 seconds with network checking (faster)
         scope.launch {
             while (isActive) {
                 try {
@@ -500,7 +503,7 @@ class MainActivity : Activity() {
                 } catch (e: Exception) {
                     Log.e("GeekDS", "Error in command polling", e)
                 }
-                delay(30 * 1000L)
+                delay(10 * 1000L)
             }
         }
 
@@ -514,7 +517,7 @@ class MainActivity : Activity() {
                 } catch (e: Exception) {
                     Log.e("GeekDS", "Error in schedule enforcement", e)
                 }
-                delay(5000L) // Check every 5 seconds instead of every second
+                delay(3000L) // Check every 3 seconds for faster response
             }
         }
 
@@ -588,10 +591,10 @@ class MainActivity : Activity() {
         val body = RequestBody.create(
             "application/json".toMediaTypeOrNull(), json.toString()
         )
-        
+
         val urlString = "$cmsUrl/api/devices/$id"
         Log.d("GeekDS", "Building heartbeat request to: $urlString")
-        
+
         val req = Request.Builder()
             .url(urlString)
             .patch(body)
@@ -674,8 +677,7 @@ class MainActivity : Activity() {
                     player?.release()
                     player = null
                     playerView = null
-
-                    // Show standby screen
+                    videoTextureView = null                    // Show standby screen
                     showStandby()
 
                     Log.i("GeekDS", "All activities stopped for re-registration")
@@ -786,6 +788,7 @@ class MainActivity : Activity() {
     private fun startRegistrationPolling(ip: String) {
         // Stop any existing polling
         registrationPollingRunnable?.let { handler.removeCallbacks(it) }
+        registrationCheckAttempts = 0 // Reset attempt counter
 
         registrationPollingRunnable = object : Runnable {
             override fun run() {
@@ -793,7 +796,7 @@ class MainActivity : Activity() {
             }
         }
 
-        // Start polling immediately, then every 2 seconds
+        // Start polling immediately
         registrationPollingRunnable?.let { handler.post(it) }
     }
 
@@ -802,7 +805,17 @@ class MainActivity : Activity() {
         registrationPollingRunnable = null
     }
 
+    private fun calculateRegistrationDelay(): Long {
+        // Exponential backoff: 1s, 2s, 4s, 8s, 15s max
+        val baseDelay = 1000L
+        val maxDelay = 15000L
+        val calculatedDelay = minOf(baseDelay * (1 shl minOf(registrationCheckAttempts - 1, 4)), maxDelay)
+        return calculatedDelay
+    }
+
     private fun checkRegistrationStatus(ip: String, pollingRunnable: Runnable) {
+        registrationCheckAttempts++
+
         val request = Request.Builder()
             .url("$cmsUrl/api/devices/check-registration/$ip")
             .get()
@@ -810,9 +823,10 @@ class MainActivity : Activity() {
 
         client.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
-                // Continue polling on failure, but only if we're still in registration state
+                // Continue polling on failure with exponential backoff
                 if (state == State.REGISTERING) {
-                    handler.postDelayed(pollingRunnable, 2000)
+                    val delay = calculateRegistrationDelay()
+                    handler.postDelayed(pollingRunnable, delay)
                 }
             }
 
@@ -848,21 +862,24 @@ class MainActivity : Activity() {
                                 Log.i("GeekDS", "Registration completed! Device ID: $newDeviceId, Name: '$newDeviceName'")
                             }
                         } else {
-                            // Continue polling only if still in registration state
+                            // Continue polling only if still in registration state with exponential backoff
                             if (state == State.REGISTERING) {
-                                handler.postDelayed(pollingRunnable, 2000)
+                                val delay = calculateRegistrationDelay()
+                                handler.postDelayed(pollingRunnable, delay)
                             }
                         }
                     } catch (e: Exception) {
-                        // Continue polling on parse error, but only if still in registration state
+                        // Continue polling on parse error with exponential backoff
                         if (state == State.REGISTERING) {
-                            handler.postDelayed(pollingRunnable, 2000)
+                            val delay = calculateRegistrationDelay()
+                            handler.postDelayed(pollingRunnable, delay)
                         }
                     }
                 } else {
-                    // Continue polling on error, but only if still in registration state
+                    // Continue polling on error with exponential backoff
                     if (state == State.REGISTERING) {
-                        handler.postDelayed(pollingRunnable, 2000)
+                        val delay = calculateRegistrationDelay()
+                        handler.postDelayed(pollingRunnable, delay)
                     }
                 }
             }
@@ -881,12 +898,22 @@ class MainActivity : Activity() {
                     "3. Enter code: $code\n" +
                     "4. Enter device name\n" +
                     "5. Click 'Register'\n\n" +
-                    "Waiting for registration...")
-            .setPositiveButton("Get New Code") { _, _ ->
+                    "Waiting for registration with smart retry...")
+            .setPositiveButton("Check Now") { _, _ ->
+                // Reset attempts for immediate check
+                registrationCheckAttempts = 0
+                registrationPollingRunnable?.let {
+                    handler.removeCallbacks(it)
+                    handler.post(it) // Check immediately
+                }
+                // Redisplay the dialog
+                showRegistrationDialog(code)
+            }
+            .setNegativeButton("Get New Code") { _, _ ->
                 stopRegistrationPolling()
                 requestRegistrationCode()
             }
-            .setNegativeButton("Check Network") { _, _ ->
+            .setNeutralButton("Check Network") { _, _ ->
                 showNetworkInfo()
             }
             .setCancelable(false)
@@ -1367,11 +1394,11 @@ class MainActivity : Activity() {
         }
 
         Log.i("GeekDS", "Starting download: $filename")
-        
+
         // URL encode the filename to handle spaces and special characters
         val encodedFilename = java.net.URLEncoder.encode(filename, "UTF-8").replace("+", "%20")
         Log.d("GeekDS", "Encoded filename: $encodedFilename")
-        
+
         val req = Request.Builder()
             .url("$cmsUrl/api/media/$encodedFilename")
             .get()
@@ -1456,7 +1483,7 @@ class MainActivity : Activity() {
 
         // URL encode the filename to handle spaces and special characters
         val encodedFilename = java.net.URLEncoder.encode(filename, "UTF-8").replace("+", "%20")
-        
+
         val req = Request.Builder()
             .url("$cmsUrl/api/media/$encodedFilename")
             .get()
@@ -1867,12 +1894,21 @@ class MainActivity : Activity() {
                 playerView = PlayerView(this@MainActivity).apply {
                     useController = false
                     // IMPORTANT: For screenshot compatibility, we'll handle this in layout
-                    player = this@MainActivity.player
                     layoutParams = ViewGroup.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.MATCH_PARENT
                     )
                 }
+
+                // Create TextureView and set it on the player directly
+                Log.i("GeekDS", "Creating TextureView for video rendering")
+                videoTextureView = TextureView(this@MainActivity)
+
+                // Set the TextureView on the player itself - correct method for TextureView
+                player?.setVideoTextureView(videoTextureView)
+
+                // Set player to the PlayerView
+                playerView?.player = player
 
                 Log.i("GeekDS", "Adding PlayerView to container")
                 rootContainer?.addView(playerView)
@@ -2175,23 +2211,54 @@ class MainActivity : Activity() {
                     return@runOnUiThread
                 }
 
-                // Check if we're playing video
+                // Smart ExoPlayer detection: Check if player is active and has content
                 val currentPlayerView = playerView
-                val isPlayingVideo = currentPlayerView != null && player?.isPlaying == true
+                val isExoPlayerActive = isExoPlayerActiveWithContent()
 
-                Log.d("GeekDS", "Is playing video: $isPlayingVideo")
+                Log.d("GeekDS", "ExoPlayer active with content: $isExoPlayerActive")
 
-                if (isPlayingVideo && currentPlayerView != null) {
-                    // For video playback, try to capture the video surface
-                    captureVideoScreenshot(currentPlayerView, rootView)
+                if (isExoPlayerActive && currentPlayerView != null) {
+                    // For active ExoPlayer, try to extract current/last frame
+                    Log.d("GeekDS", "Using ExoPlayer frame extraction method")
+                    captureExoPlayerFrame(currentPlayerView, rootView)
                 } else {
-                    // For standby mode, use regular view drawing
+                    // For standby mode or inactive player, use regular view drawing
+                    Log.d("GeekDS", "Using traditional screenshot method")
                     captureRegularScreenshot(rootView)
                 }
 
             } catch (e: Exception) {
                 Log.e("GeekDS", "Error taking screenshot", e)
             }
+        }
+    }
+
+    // Smart detection of ExoPlayer state
+    private fun isExoPlayerActiveWithContent(): Boolean {
+        val currentPlayer = player ?: return false
+        
+        return try {
+            // Check if player has content loaded
+            val hasContent = currentPlayer.mediaItemCount > 0
+            
+            // Check player state - consider READY, BUFFERING, or ENDED as "active with content"
+            val playbackState = currentPlayer.playbackState
+            val isActiveState = playbackState == androidx.media3.common.Player.STATE_READY ||
+                               playbackState == androidx.media3.common.Player.STATE_BUFFERING ||
+                               playbackState == androidx.media3.common.Player.STATE_ENDED
+            
+            // Check if currently playing or was recently playing (paused but has content)
+            val isPlaying = currentPlayer.isPlaying
+            val hasPlayedContent = currentPlayer.contentPosition > 0 || currentPlayer.currentPosition > 0
+            
+            val isActive = hasContent && isActiveState && (isPlaying || hasPlayedContent)
+            
+            Log.d("GeekDS", "ExoPlayer state - hasContent: $hasContent, state: $playbackState, isPlaying: $isPlaying, hasPlayedContent: $hasPlayedContent, result: $isActive")
+            
+            isActive
+        } catch (e: Exception) {
+            Log.w("GeekDS", "Error checking ExoPlayer state: ${e.message}")
+            false
         }
     }
 
@@ -2217,29 +2284,129 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun captureVideoScreenshot(playerView: PlayerView, rootView: View) {
+    private fun captureExoPlayerFrame(playerView: PlayerView, rootView: View) {
         try {
-            // For video, we need to find the TextureView or SurfaceView inside PlayerView
-            val videoView = findVideoSurface(playerView)
+            Log.d("GeekDS", "Attempting ExoPlayer frame extraction...")
 
-            if (videoView is TextureView) {
-                // TextureView can be captured directly
-                val videoBitmap = videoView.getBitmap()
-                if (videoBitmap != null) {
-                    Log.d("GeekDS", "Video screenshot captured from TextureView: ${videoBitmap.width}x${videoBitmap.height}")
+            // Method 1: Use our stored TextureView reference (most reliable for current frame)
+            if (videoTextureView != null && videoTextureView!!.isAvailable) {
+                Log.d("GeekDS", "Extracting frame from stored TextureView reference")
+                val videoBitmap = videoTextureView!!.getBitmap()
+                if (videoBitmap != null && !videoBitmap.isRecycled && videoBitmap.width > 1 && videoBitmap.height > 1) {
+                    Log.d("GeekDS", "SUCCESS: ExoPlayer frame extracted from stored TextureView: ${videoBitmap.width}x${videoBitmap.height}")
+                    uploadProcessedScreenshot(videoBitmap)
+                    return
+                } else {
+                    Log.d("GeekDS", "Stored TextureView bitmap was null or invalid")
+                }
+            } else {
+                Log.d("GeekDS", "Stored TextureView is null or not available")
+            }
+
+            // Method 2: Get current frame from PlayerView's video surface
+            val videoSurfaceView = playerView.videoSurfaceView
+            if (videoSurfaceView is TextureView && videoSurfaceView.isAvailable) {
+                Log.d("GeekDS", "Extracting frame from PlayerView TextureView")
+                val videoBitmap = videoSurfaceView.getBitmap()
+                if (videoBitmap != null && !videoBitmap.isRecycled && videoBitmap.width > 1 && videoBitmap.height > 1) {
+                    Log.d("GeekDS", "SUCCESS: ExoPlayer frame extracted from PlayerView TextureView: ${videoBitmap.width}x${videoBitmap.height}")
+                    uploadProcessedScreenshot(videoBitmap)
+                    return
+                } else {
+                    Log.d("GeekDS", "PlayerView TextureView bitmap was null or invalid")
+                }
+            } else {
+                Log.d("GeekDS", "PlayerView videoSurfaceView is not TextureView or not available: ${videoSurfaceView?.javaClass?.simpleName}")
+            }
+
+            // Method 3: Search for TextureView in PlayerView hierarchy (for current frame)
+            val foundTextureView = findTextureViewRecursive(playerView)
+            if (foundTextureView != null && foundTextureView.isAvailable) {
+                Log.d("GeekDS", "Extracting frame from found TextureView in hierarchy")
+                val videoBitmap = foundTextureView.getBitmap()
+                if (videoBitmap != null && !videoBitmap.isRecycled && videoBitmap.width > 1 && videoBitmap.height > 1) {
+                    Log.d("GeekDS", "SUCCESS: ExoPlayer frame extracted from found TextureView: ${videoBitmap.width}x${videoBitmap.height}")
                     uploadProcessedScreenshot(videoBitmap)
                     return
                 }
             }
 
-            // Fallback: capture the whole view (might show black for SurfaceView)
-            Log.d("GeekDS", "Fallback to regular screenshot (video may appear black)")
+            // Method 4: Try to get frame from ExoPlayer using MediaMetadataRetriever approach
+            if (tryExtractFrameFromExoPlayer()) {
+                return // Success handled in the method
+            }
+
+            Log.w("GeekDS", "All ExoPlayer frame extraction methods failed, falling back to traditional screenshot")
+            // Fallback: Use traditional screenshot as last resort
             captureRegularScreenshot(rootView)
 
         } catch (e: Exception) {
-            Log.e("GeekDS", "Error in video screenshot", e)
-            // Fallback to regular screenshot
+            Log.e("GeekDS", "Error in ExoPlayer frame extraction, falling back to regular screenshot", e)
             captureRegularScreenshot(rootView)
+        }
+    }
+
+    // Method to extract frame from ExoPlayer using current media file
+    private fun tryExtractFrameFromExoPlayer(): Boolean {
+        return try {
+            val currentPlayer = player ?: return false
+            val currentMediaItem = currentPlayer.currentMediaItem ?: return false
+            
+            // Get the current media URI
+            val mediaUri = currentMediaItem.localConfiguration?.uri
+            if (mediaUri == null) {
+                Log.d("GeekDS", "No media URI available for frame extraction")
+                return false
+            }
+            
+            Log.d("GeekDS", "Attempting frame extraction from media URI: $mediaUri")
+            
+            // Use MediaMetadataRetriever to get frame at current position
+            val retriever = MediaMetadataRetriever()
+            
+            retriever.setDataSource(this, mediaUri)
+            
+            // Get current playback position in microseconds
+            val currentPositionMs = currentPlayer.currentPosition
+            val currentPositionUs = currentPositionMs * 1000L
+            
+            Log.d("GeekDS", "Extracting frame at position: ${currentPositionMs}ms")
+            
+            // Get frame at current position
+            val frameBitmap = retriever.getFrameAtTime(currentPositionUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+            
+            retriever.release()
+            
+            if (frameBitmap != null && !frameBitmap.isRecycled && frameBitmap.width > 1 && frameBitmap.height > 1) {
+                Log.d("GeekDS", "SUCCESS: Frame extracted from ExoPlayer media: ${frameBitmap.width}x${frameBitmap.height}")
+                uploadProcessedScreenshot(frameBitmap)
+                return true
+            } else {
+                Log.d("GeekDS", "MediaMetadataRetriever returned null or invalid bitmap")
+                return false
+            }
+            
+        } catch (e: Exception) {
+            Log.w("GeekDS", "MediaMetadataRetriever frame extraction failed: ${e.message}")
+            false
+        }
+    }
+
+    private fun captureViewAsBitmap(view: View): Bitmap? {
+        return try {
+            if (view.width <= 0 || view.height <= 0) return null
+
+            val bitmap = Bitmap.createBitmap(
+                view.width,
+                view.height,
+                Bitmap.Config.ARGB_8888
+            )
+            val canvas = Canvas(bitmap)
+            view.draw(canvas)
+            bitmap
+        } catch (e: Exception) {
+            Log.e("GeekDS", "Error capturing view as bitmap", e)
+            null
         }
     }
 
@@ -2252,6 +2419,22 @@ class MainActivity : Activity() {
             for (i in 0 until viewGroup.childCount) {
                 val child = viewGroup.getChildAt(i)
                 val result = findVideoSurface(child)
+                if (result != null) return result
+            }
+        }
+
+        return null
+    }
+
+    private fun findTextureViewRecursive(viewGroup: View?): TextureView? {
+        if (viewGroup is TextureView) {
+            return viewGroup
+        }
+
+        if (viewGroup is ViewGroup) {
+            for (i in 0 until viewGroup.childCount) {
+                val child = viewGroup.getChildAt(i)
+                val result = findTextureViewRecursive(child)
                 if (result != null) return result
             }
         }

@@ -3,6 +3,7 @@ import { pool } from './models';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
+import { cacheMiddleware, invalidateCache, CACHE_KEYS, CACHE_TTL } from './redis';
 
 const router = Router();
 
@@ -93,7 +94,7 @@ setInterval(async () => {
 }, CHECK_INTERVAL);
 
 // List all devices
-router.get('/', async (req, res) => {
+router.get('/', cacheMiddleware(CACHE_KEYS.DEVICES, CACHE_TTL.DEVICES), async (req, res) => {
   const result = await pool.query('SELECT * FROM devices ORDER BY id');
   res.json(result.rows);
 });
@@ -189,11 +190,15 @@ router.post('/', async (req, res) => {
     'INSERT INTO devices (name, ip, status, last_ping) VALUES ($1, $2, $3, NOW()) RETURNING *',
     [name, ip, 'offline']
   );
+  
+  // Invalidate devices cache
+  await invalidateCache(CACHE_KEYS.DEVICES + '*');
+  
   res.status(201).json(result.rows[0]);
 });
 
 // Get single device
-router.get('/:id', async (req, res) => {
+router.get('/:id', cacheMiddleware(CACHE_KEYS.DEVICE(''), CACHE_TTL.DEVICES), async (req, res) => {
   const { id } = req.params;
   const result = await pool.query('SELECT * FROM devices WHERE id = $1', [id]);
   
@@ -284,9 +289,10 @@ router.patch('/:id', async (req, res) => {
   }
 });
 
-// NEW: Request screenshot from device (HTTP polling approach)
+// NEW: Request screenshot from device (HTTP polling approach with completion waiting)
 router.post('/:id/screenshot', async (req, res) => {
   const { id } = req.params;
+  const timeout = 15000; // 15 seconds timeout
 
   try {
     // Check if device exists and is online
@@ -306,17 +312,57 @@ router.post('/:id/screenshot', async (req, res) => {
     }
 
     // Create a screenshot request record in database
-    await pool.query(
-      'INSERT INTO screenshot_requests (device_id, requested_at, status) VALUES ($1, NOW(), $2)',
+    const requestResult = await pool.query(
+      'INSERT INTO screenshot_requests (device_id, requested_at, status) VALUES ($1, NOW(), $2) RETURNING id',
       [id, 'pending']
     );
 
-    console.log(`Screenshot request queued for device ${device.name} (ID: ${id})`);
+    const requestId = requestResult.rows[0].id;
+    console.log(`Screenshot request queued for device ${device.name} (ID: ${id}), request ID: ${requestId}`);
     
-    res.json({ 
-      message: 'Screenshot request queued - device will respond during next poll',
-      device_id: id,
-      device_name: device.name
+    // Wait for screenshot completion with timeout
+    const startTime = Date.now();
+    
+    while (Date.now() - startTime < timeout) {
+      // Check if screenshot was completed
+      const statusResult = await pool.query(
+        'SELECT status, screenshot_filename, error_message FROM screenshot_requests WHERE id = $1',
+        [requestId]
+      );
+
+      if (statusResult.rows.length > 0) {
+        const request = statusResult.rows[0];
+        
+        if (request.status === 'completed') {
+          return res.json({
+            message: 'Screenshot captured successfully',
+            device_id: id,
+            device_name: device.name,
+            screenshot_filename: request.screenshot_filename,
+            request_id: requestId
+          });
+        } else if (request.status === 'failed') {
+          return res.status(500).json({
+            error: 'Screenshot capture failed',
+            message: request.error_message || 'Unknown error'
+          });
+        }
+      }
+
+      // Wait 500ms before checking again
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+
+    // Timeout reached - mark request as timeout
+    await pool.query(
+      'UPDATE screenshot_requests SET status = $1, error_message = $2 WHERE id = $3',
+      ['timeout', 'Request timed out', requestId]
+    );
+
+    return res.status(408).json({
+      error: 'Screenshot request timed out',
+      message: 'Device did not respond within 15 seconds',
+      request_id: requestId
     });
 
   } catch (error) {
@@ -375,11 +421,43 @@ router.post('/:id/screenshot/upload', upload.single('screenshot'), async (req, r
 
     console.log(`Screenshot uploaded for device ${id}: ${req.file.filename}, size: ${req.file.size} bytes`);
     
-    // Mark any processing screenshot requests as completed
-    await pool.query(
-      'UPDATE screenshot_requests SET status = $1 WHERE device_id = $2 AND status = $3',
-      ['completed', id, 'processing']
+    // Mark the most recent pending screenshot request as completed
+    const updateResult = await pool.query(
+      `UPDATE screenshot_requests 
+       SET status = $1, completed_at = NOW(), screenshot_filename = $2, processed_at = NOW()
+       WHERE id = (
+         SELECT id FROM screenshot_requests 
+         WHERE device_id = $3 AND status = $4 
+         ORDER BY requested_at DESC 
+         LIMIT 1
+       )
+       RETURNING id`,
+      ['completed', req.file.filename, id, 'pending']
     );
+    
+    // If no pending request found, try to update the most recent timeout request
+    if (updateResult.rows.length === 0) {
+      console.log(`No pending request found, trying to update most recent request for device ${id}`);
+      const fallbackUpdate = await pool.query(
+        `UPDATE screenshot_requests 
+         SET status = $1, completed_at = NOW(), screenshot_filename = $2, processed_at = NOW()
+         WHERE device_id = $3 
+         AND requested_at = (
+           SELECT MAX(requested_at) FROM screenshot_requests 
+           WHERE device_id = $3
+         )
+         RETURNING id, status as old_status`,
+        ['completed', req.file.filename, id]
+      );
+      
+      if (fallbackUpdate.rows.length > 0) {
+        console.log(`Updated request ${fallbackUpdate.rows[0].id} from ${fallbackUpdate.rows[0].old_status} to completed`);
+      } else {
+        console.log(`No screenshot request found for device ${id}`);
+      }
+    } else {
+      console.log(`Marked screenshot request ${updateResult.rows[0].id} as completed`);
+    }
     
     res.json({
       message: 'Screenshot uploaded successfully',
@@ -389,6 +467,25 @@ router.post('/:id/screenshot/upload', upload.single('screenshot'), async (req, r
     });
   } catch (error) {
     console.error('Error uploading screenshot:', error);
+    
+    // Mark request as failed if there was an error
+    try {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      await pool.query(
+        `UPDATE screenshot_requests 
+         SET status = $1, error_message = $2 
+         WHERE id = (
+           SELECT id FROM screenshot_requests 
+           WHERE device_id = $3 AND status = $4 
+           ORDER BY requested_at DESC 
+           LIMIT 1
+         )`,
+        ['failed', errorMessage, id, 'pending']
+      );
+    } catch (dbError) {
+      console.error('Error updating failed screenshot request:', dbError);
+    }
+    
     res.status(500).json({ error: 'Failed to upload screenshot' });
   }
 });
