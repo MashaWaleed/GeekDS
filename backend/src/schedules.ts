@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { pool } from './models';
+import { cacheMiddleware, invalidateCache, CACHE_KEYS, CACHE_TTL } from './redis';
 
 const router = Router();
 
@@ -7,8 +8,8 @@ const router = Router();
 // Relying on standard ISO 8601 format and letting the database driver
 // handle UTC conversion is the correct and more robust approach.
 
-// List all schedules
-router.get('/', async (req, res) => {
+// List all schedules (cached)
+router.get('/', cacheMiddleware(CACHE_KEYS.SCHEDULES, CACHE_TTL.SCHEDULES), async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT s.*, 
@@ -99,7 +100,8 @@ router.post('/', async (req, res) => {
         is_enabled
       ]
     );
-
+    // Invalidate schedules cache
+    await invalidateCache(CACHE_KEYS.SCHEDULES + '*');
     res.status(201).json(result.rows[0]);
   } catch (error) {
     console.error('Error creating schedule:', error);
@@ -209,7 +211,8 @@ router.patch('/:id', async (req, res) => {
         id
       ]
     );
-
+    // Invalidate schedules cache
+    await invalidateCache(CACHE_KEYS.SCHEDULES + '*');
     res.json(result.rows[0]);
   } catch (error) {
     console.error('Error updating schedule:', error);
@@ -225,6 +228,8 @@ router.delete('/:id', async (req, res) => {
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Schedule not found' });
     }
+    // Invalidate schedules cache
+    await invalidateCache(CACHE_KEYS.SCHEDULES + '*');
     res.json({ success: true, deleted_id: parseInt(id, 10) });
   } catch (error) {
     console.error('Error deleting schedule:', error);
@@ -238,7 +243,7 @@ router.get('/device/:deviceId', async (req, res) => {
   const { deviceId } = req.params;
   try {
     const result = await pool.query(
-      'SELECT *, updated_at FROM schedules WHERE device_id = $1 ORDER BY start_time',
+      'SELECT *, updated_at FROM schedules WHERE device_id = $1 ORDER BY time_slot_start',
       [deviceId]
     );
     res.json(result.rows);

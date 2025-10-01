@@ -25,6 +25,27 @@ const storage = multer.diskStorage({
   }
 });
 
+// NEW: Check registration by durable UUID (preferred)
+router.get('/check-registration/by-uuid/:uuid', async (req, res) => {
+  const { uuid } = req.params;
+
+  try {
+    const result = await pool.query(
+      'SELECT * FROM devices WHERE uuid = $1 LIMIT 1',
+      [uuid]
+    );
+
+    if (result.rows.length > 0) {
+      res.json({ registered: true, device: result.rows[0] });
+    } else {
+      res.json({ registered: false });
+    }
+  } catch (error) {
+    console.error('Error checking registration by uuid:', error);
+    res.status(500).json({ error: 'Failed to check registration' });
+  }
+});
+
 const upload = multer({ 
   storage,
   limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
@@ -77,9 +98,9 @@ setInterval(() => {
   }
 }, 60 * 1000); // Clean up every minute
 
-// Device offline monitoring - check every minute and mark devices offline if no heartbeat for 3 minutes
-const HEARTBEAT_TIMEOUT = 3 * 60 * 1000; // 3 minutes in milliseconds
-const CHECK_INTERVAL = 60 * 1000; // Check every minute
+// Device offline monitoring - heartbeat is ~30s, so mark offline at ~1.5x = 45s
+const HEARTBEAT_TIMEOUT = 45 * 1000; // 45 seconds
+const CHECK_INTERVAL = 15 * 1000; // Check every 15 seconds for faster detection
 
 setInterval(async () => {
   try {
@@ -139,13 +160,17 @@ router.post('/register-device', async (req, res) => {
     // Create the device
     const result = await pool.query(
       'INSERT INTO devices (name, ip, status, last_ping) VALUES ($1, $2, $3, NOW()) RETURNING *',
-      [name.trim(), pendingReg.ip, 'offline']
+      [name.trim(), pendingReg.ip, 'online']
     );
 
     // Remove from pending registrations
     pendingRegistrations.delete(code);
 
     console.log(`Device registered: ${name} (ID: ${result.rows[0].id}) with IP: ${pendingReg.ip}`);
+
+    // Invalidate devices cache so it shows up immediately in the dashboard
+    await invalidateCache(CACHE_KEYS.DEVICES + '*');
+    await invalidateCache('device:*');
 
     res.status(201).json({
       device: result.rows[0],
@@ -188,7 +213,7 @@ router.post('/', async (req, res) => {
   const { name, ip } = req.body;
   const result = await pool.query(
     'INSERT INTO devices (name, ip, status, last_ping) VALUES ($1, $2, $3, NOW()) RETURNING *',
-    [name, ip, 'offline']
+    [name, ip, 'online']
   );
   
   // Invalidate devices cache
@@ -197,8 +222,8 @@ router.post('/', async (req, res) => {
   res.status(201).json(result.rows[0]);
 });
 
-// Get single device
-router.get('/:id', cacheMiddleware(CACHE_KEYS.DEVICE(''), CACHE_TTL.DEVICES), async (req, res) => {
+// Get single device (do not cache path-param based resource to avoid stale/mis-keyed cache)
+router.get('/:id', async (req, res) => {
   const { id } = req.params;
   const result = await pool.query('SELECT * FROM devices WHERE id = $1', [id]);
   
@@ -229,6 +254,10 @@ router.put('/:id', async (req, res) => {
     }
 
     console.log(`Device updated: ${name} (ID: ${id})`);
+    // Invalidate related caches: devices list, specific devices, schedules (device_name joined)
+    await invalidateCache(CACHE_KEYS.DEVICES + '*');
+    await invalidateCache('device:*');
+    await invalidateCache(CACHE_KEYS.SCHEDULES + '*');
     res.json(result.rows[0]);
   } catch (error) {
     console.error('Error updating device:', error);
@@ -248,6 +277,10 @@ router.delete('/:id', async (req, res) => {
     }
 
     console.log(`Device deleted: ${result.rows[0].name} (ID: ${id})`);
+    // Invalidate related caches: devices list, specific devices, schedules (cascaded deletions)
+    await invalidateCache(CACHE_KEYS.DEVICES + '*');
+    await invalidateCache('device:*');
+    await invalidateCache(CACHE_KEYS.SCHEDULES + '*');
     res.json({ message: 'Device deleted successfully', device: result.rows[0] });
   } catch (error) {
     console.error('Error deleting device:', error);
@@ -257,18 +290,25 @@ router.delete('/:id', async (req, res) => {
 
 // FIXED: Update device status (heartbeat) - NO AUTO-RECREATION, returns 404 when device doesn't exist
 router.patch('/:id', async (req, res) => {
-  const { status, current_media, system_info, ip } = req.body;
+  const { status, current_media, system_info, ip, uuid } = req.body;
   const { id } = req.params;
 
   try {
     let updateFields = ['status = $1', 'last_ping = NOW()', 'current_media = $2', 'system_info = $3'];
-    let values = [status, current_media, system_info];
+    let values: any[] = [status, current_media, system_info];
     let paramCounter = 4;
 
     // Only update IP if provided (don't update name to avoid overriding dashboard changes)
     if (ip && ip.trim() !== '') {
       updateFields.push(`ip = $${paramCounter}`);
       values.push(ip.trim());
+      paramCounter++;
+    }
+
+    // Optionally update uuid if provided and missing
+    if (uuid && uuid.trim() !== '') {
+      updateFields.push(`uuid = $${paramCounter}`);
+      values.push(uuid.trim());
       paramCounter++;
     }
 
@@ -372,7 +412,8 @@ router.post('/:id/screenshot', async (req, res) => {
 });
 
 // NEW: Device polls for commands (including screenshot requests)
-router.get('/:id/commands', async (req, res) => {
+// Renamed to avoid conflict with device_commands endpoint in commands.ts
+router.get('/:id/commands/poll', async (req, res) => {
   const { id } = req.params;
 
   try {
@@ -555,5 +596,50 @@ router.get('/:id/screenshot/status', async (req, res) => {
   }
 });
 
+// NEW: Claim or create device by durable UUID (auto-recovery after DB wipe)
+router.post('/claim', async (req, res) => {
+  const { uuid, name, ip, system_info } = req.body;
+
+  if (!uuid || typeof uuid !== 'string' || uuid.trim() === '') {
+    return res.status(400).json({ error: 'uuid is required' });
+  }
+
+  try {
+    // Try to find existing device by UUID
+    const existing = await pool.query('SELECT * FROM devices WHERE uuid = $1 LIMIT 1', [uuid]);
+
+    if (existing.rows.length > 0) {
+      // Update metadata and mark online
+      const upd = await pool.query(
+        `UPDATE devices
+         SET name = COALESCE($1, name),
+             ip = COALESCE($2, ip),
+             status = 'online',
+             last_ping = NOW(),
+             system_info = COALESCE($3, system_info)
+         WHERE uuid = $4
+         RETURNING *`,
+        [name || null, ip || null, system_info || null, uuid]
+      );
+
+      await invalidateCache(CACHE_KEYS.DEVICES + '*');
+      return res.json({ device: upd.rows[0], claimed: true });
+    }
+
+    // Create new device row with provided UUID
+    const ins = await pool.query(
+      `INSERT INTO devices (uuid, name, ip, status, last_ping, system_info)
+       VALUES ($1, $2, $3, 'online', NOW(), $4)
+       RETURNING *`,
+      [uuid, name || 'Device', ip || 'unknown', system_info || null]
+    );
+
+    await invalidateCache(CACHE_KEYS.DEVICES + '*');
+    return res.status(201).json({ device: ins.rows[0], claimed: false, created: true });
+  } catch (error) {
+    console.error('Error claiming device by uuid:', error);
+    return res.status(500).json({ error: 'Failed to claim device' });
+  }
+});
 
 export default router;

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState, useDeferredValue } from 'react';
 import {
   Paper,
   Typography,
@@ -76,8 +76,14 @@ function Playlists() {
   const [folderName, setFolderName] = useState('');
   const [selectedMedia, setSelectedMedia] = useState([]);
   const [selectedFolder, setSelectedFolder] = useState('');
+  // Debounced search inputs
+  const [searchInput, setSearchInput] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
+  const [mediaSearchInput, setMediaSearchInput] = useState('');
   const [mediaSearchTerm, setMediaSearchTerm] = useState('');
+  // Defer heavy filtering to keep typing responsive
+  const deferredPlaylistSearch = useDeferredValue(searchTerm);
+  const deferredMediaSearch = useDeferredValue(mediaSearchTerm);
   const [selectedMediaFolder, setSelectedMediaFolder] = useState('');
   const [showMediaPreview, setShowMediaPreview] = useState(false);
   const [menuAnchor, setMenuAnchor] = useState(null);
@@ -85,6 +91,18 @@ function Playlists() {
   const [viewMode, setViewMode] = useState('list'); // 'list' or 'grid'
 
   const API_URL = process.env.REACT_APP_API_URL;
+
+  // Debounce playlist search input (200ms)
+  useEffect(() => {
+    const t = setTimeout(() => setSearchTerm(searchInput), 200);
+    return () => clearTimeout(t);
+  }, [searchInput]);
+
+  // Debounce media search input (200ms)
+  useEffect(() => {
+    const t = setTimeout(() => setMediaSearchTerm(mediaSearchInput), 200);
+    return () => clearTimeout(t);
+  }, [mediaSearchInput]);
 
   const fetchPlaylists = () => {
     setLoading(true);
@@ -109,23 +127,35 @@ function Playlists() {
     fetchPlaylists();
   }, []);
 
-  // Filter playlists
-  const filteredPlaylists = playlists.filter(playlist => {
-    const matchesFolder = selectedFolder === '' || 
-                         (selectedFolder === 'none' && !playlist.folder_id) ||
-                         playlist.folder_id?.toString() === selectedFolder;
-    const matchesSearch = playlist.name.toLowerCase().includes(searchTerm.toLowerCase());
-    return matchesFolder && matchesSearch;
-  });
+  // Filter playlists (memoized)
+  const filteredPlaylists = useMemo(() => {
+    const term = (deferredPlaylistSearch || '').toLowerCase();
+    const result = playlists.filter(playlist => {
+      const matchesFolder = selectedFolder === '' || 
+                           (selectedFolder === 'none' && !playlist.folder_id) ||
+                           playlist.folder_id?.toString() === selectedFolder;
+      const matchesSearch = playlist.name.toLowerCase().includes(term);
+      return matchesFolder && matchesSearch;
+    });
+    // Sort alphabetically by name for stable ordering
+    result.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+    return result;
+  }, [playlists, selectedFolder, deferredPlaylistSearch]);
 
-  // Filter media for selection
-  const filteredMedia = media.filter(file => {
-    const matchesFolder = selectedMediaFolder === '' || 
-                         (selectedMediaFolder === 'none' && !file.folder_id) ||
-                         file.folder_id?.toString() === selectedMediaFolder;
-    const matchesSearch = file.filename.toLowerCase().includes(mediaSearchTerm.toLowerCase());
-    return matchesFolder && matchesSearch;
-  });
+  // Filter media for selection (memoized)
+  const filteredMedia = useMemo(() => {
+    const term = (deferredMediaSearch || '').toLowerCase();
+    const result = media.filter(file => {
+      const matchesFolder = selectedMediaFolder === '' || 
+                           (selectedMediaFolder === 'none' && !file.folder_id) ||
+                           file.folder_id?.toString() === selectedMediaFolder;
+      const matchesSearch = file.filename.toLowerCase().includes(term);
+      return matchesFolder && matchesSearch;
+    });
+    // Sort alphabetically by filename
+    result.sort((a, b) => a.filename.localeCompare(b.filename, undefined, { sensitivity: 'base' }));
+    return result;
+  }, [media, selectedMediaFolder, deferredMediaSearch]);
 
   const currentFolderData = folders.find(f => f.id?.toString() === selectedFolder);
 
@@ -342,15 +372,15 @@ function Playlists() {
 
   const renderPlaylistTable = () => (
     <TableContainer>
-      <Table size="small">
+      <Table size="small" sx={{ tableLayout: 'fixed' }}>
         <TableHead>
           <TableRow>
-            <TableCell>Name</TableCell>
-            <TableCell>Files</TableCell>
-            <TableCell>Duration</TableCell>
-            <TableCell>Folder</TableCell>
-            <TableCell>Updated</TableCell>
-            <TableCell align="right">Actions</TableCell>
+            <TableCell sx={{ width: '35%' }}>Name</TableCell>
+            <TableCell sx={{ width: 100 }}>Files</TableCell>
+            <TableCell sx={{ width: 120 }}>Duration</TableCell>
+            <TableCell sx={{ width: '20%' }}>Folder</TableCell>
+            <TableCell sx={{ width: 140 }}>Updated</TableCell>
+            <TableCell align="right" sx={{ width: 120 }}>Actions</TableCell>
           </TableRow>
         </TableHead>
         <TableBody>
@@ -358,22 +388,22 @@ function Playlists() {
             const stats = getPlaylistStats(playlist);
             return (
               <TableRow key={playlist.id} hover>
-                <TableCell>
+                <TableCell sx={{ width: '35%' }}>
                   <Box display="flex" alignItems="center">
                     <PlaylistPlayIcon sx={{ mr: 1, color: 'text.secondary' }} />
                     {playlist.name}
                   </Box>
                 </TableCell>
-                <TableCell>{stats.count}</TableCell>
-                <TableCell>{formatDuration(stats.duration)}</TableCell>
-                <TableCell>
+                <TableCell sx={{ width: 100 }}>{stats.count}</TableCell>
+                <TableCell sx={{ width: 120 }}>{formatDuration(stats.duration)}</TableCell>
+                <TableCell sx={{ width: '20%' }}>
                   {playlist.folder_id ? 
                     folders.find(f => f.id === playlist.folder_id)?.name || 'Unknown' : 
                     'None'
                   }
                 </TableCell>
-                <TableCell>{new Date(playlist.updated_at).toLocaleDateString()}</TableCell>
-                <TableCell align="right">
+                <TableCell sx={{ width: 140 }}>{new Date(playlist.updated_at).toLocaleDateString()}</TableCell>
+                <TableCell align="right" sx={{ width: 120 }}>
                   <IconButton 
                     size="small"
                     onClick={(e) => handleMenuOpen(e, playlist)}
@@ -423,8 +453,8 @@ function Playlists() {
               fullWidth
               size="small"
               placeholder="Search playlists..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
               InputProps={{
                 startAdornment: (
                   <InputAdornment position="start">
@@ -587,7 +617,7 @@ function Playlists() {
       </Menu>
 
       {/* Playlist Dialog */}
-      <Dialog open={open} onClose={handleCloseDialog} maxWidth="md" fullWidth>
+      <Dialog open={open} keepMounted onClose={handleCloseDialog} maxWidth="md" fullWidth>
         <DialogTitle>{editingPlaylist ? 'Edit Playlist' : 'Create New Playlist'}</DialogTitle>
         <DialogContent>
           <Grid container spacing={2}>
@@ -675,8 +705,8 @@ function Playlists() {
                   <TextField
                     size="small"
                     placeholder="Search media..."
-                    value={mediaSearchTerm}
-                    onChange={(e) => setMediaSearchTerm(e.target.value)}
+                    value={mediaSearchInput}
+                    onChange={(e) => setMediaSearchInput(e.target.value)}
                     fullWidth
                     InputProps={{
                       startAdornment: (
@@ -767,7 +797,7 @@ function Playlists() {
       </Dialog>
 
       {/* Folder Dialog */}
-      <Dialog open={folderDialog} onClose={() => setFolderDialog(false)} maxWidth="sm" fullWidth>
+      <Dialog open={folderDialog} keepMounted onClose={() => setFolderDialog(false)} maxWidth="sm" fullWidth>
         <DialogTitle>Create New Folder</DialogTitle>
         <DialogContent>
           <TextField

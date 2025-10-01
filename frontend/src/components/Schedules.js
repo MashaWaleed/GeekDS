@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Paper,
   Typography,
@@ -82,6 +82,8 @@ function Schedules() {
   const [apiError, setApiError] = useState('');
 
   // Enhanced UI state
+  // Debounced search state
+  const [searchInput, setSearchInput] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [deviceFilter, setDeviceFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
@@ -92,23 +94,33 @@ function Schedules() {
 
   const API_URL = process.env.REACT_APP_API_URL;
 
-  // Enhanced filtering
-  const filteredSchedules = schedules.filter(schedule => {
-    const matchesSearch = 
-      schedule.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      devices.find(d => d.id === schedule.device_id)?.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      playlists.find(p => p.id === schedule.playlist_id)?.name.toLowerCase().includes(searchTerm.toLowerCase());
+  // Debounce search input (200ms)
+  useEffect(() => {
+    const t = setTimeout(() => setSearchTerm(searchInput), 200);
+    return () => clearTimeout(t);
+  }, [searchInput]);
+
+  // Enhanced filtering (memoized)
+  const filteredSchedules = useMemo(() => {
+    const term = searchTerm.toLowerCase();
+    return schedules.filter(schedule => {
+      const deviceName = devices.find(d => d.id === schedule.device_id)?.name?.toLowerCase() || '';
+      const playlistName = playlists.find(p => p.id === schedule.playlist_id)?.name?.toLowerCase() || '';
+      const matchesSearch = (schedule.name || '').toLowerCase().includes(term) ||
+        deviceName.includes(term) ||
+        playlistName.includes(term);
     
-    const matchesDevice = deviceFilter === '' || schedule.device_id.toString() === deviceFilter;
+      const matchesDevice = deviceFilter === '' || schedule.device_id.toString() === deviceFilter;
     
-    const matchesStatus = 
-      statusFilter === 'all' ||
-      (statusFilter === 'active' && schedule.is_enabled) ||
-      (statusFilter === 'inactive' && !schedule.is_enabled) ||
-      (statusFilter === 'current' && isCurrentlyActive(schedule));
+      const matchesStatus = 
+        statusFilter === 'all' ||
+        (statusFilter === 'active' && schedule.is_enabled) ||
+        (statusFilter === 'inactive' && !schedule.is_enabled) ||
+        (statusFilter === 'current' && isCurrentlyActive(schedule));
     
-    return matchesSearch && matchesDevice && matchesStatus;
-  });
+      return matchesSearch && matchesDevice && matchesStatus;
+    });
+  }, [schedules, devices, playlists, deviceFilter, statusFilter, searchTerm]);
 
   // Check if a schedule is currently active
   const isCurrentlyActive = (schedule) => {
@@ -125,47 +137,46 @@ function Schedules() {
     return currentTime >= schedule.time_slot_start && currentTime <= schedule.time_slot_end;
   };
 
-  // Group schedules
-  const groupedSchedules = () => {
+  // Group schedules (memoized)
+  const groupedSchedules = useMemo(() => {
     if (groupBy === 'none') return { 'All Schedules': filteredSchedules };
-    
     const groups = {};
-    
-    filteredSchedules.forEach(schedule => {
+    for (const schedule of filteredSchedules) {
       let groupKey;
-      
       switch (groupBy) {
-        case 'device':
+        case 'device': {
           const device = devices.find(d => d.id === schedule.device_id);
           groupKey = device ? device.name : 'Unknown Device';
           break;
-        case 'playlist':
+        }
+        case 'playlist': {
           const playlist = playlists.find(p => p.id === schedule.playlist_id);
           groupKey = playlist ? playlist.name : 'Unknown Playlist';
           break;
+        }
         case 'day':
           groupKey = schedule.days_of_week.join(', ');
           break;
         default:
           groupKey = 'All Schedules';
       }
-      
       if (!groups[groupKey]) groups[groupKey] = [];
       groups[groupKey].push(schedule);
-    });
-    
+    }
     return groups;
-  };
+  }, [filteredSchedules, devices, playlists, groupBy]);
 
-  // Statistics
-  const getScheduleStats = () => {
-    const total = schedules.length;
-    const active = schedules.filter(s => s.is_enabled).length;
-    const inactive = total - active;
-    const currentlyRunning = schedules.filter(isCurrentlyActive).length;
-    
-    return { total, active, inactive, currentlyRunning };
-  };
+  // Statistics (memoized)
+  const scheduleStats = useMemo(() => {
+    let total = schedules.length;
+    let active = 0;
+    let running = 0;
+    for (const s of schedules) {
+      if (s.is_enabled) active++;
+      if (isCurrentlyActive(s)) running++;
+    }
+    return { total, active, inactive: total - active, currentlyRunning: running };
+  }, [schedules]);
 
   const handleMenuOpen = (event, item) => {
     setMenuAnchor(event.currentTarget);
@@ -320,7 +331,6 @@ function Schedules() {
                 hover
                 sx={{ 
                   opacity: sch.is_enabled ? 1 : 0.5,
-                  backgroundColor: isCurrentActive ? 'success.light' : 'inherit',
                   '& td': { 
                     borderLeft: isCurrentActive ? '4px solid' : 'none',
                     borderLeftColor: 'success.main'
@@ -575,7 +585,7 @@ function Schedules() {
         
         {/* Statistics Cards */}
         <Grid container spacing={2} mb={3}>
-          {Object.entries(getScheduleStats()).map(([key, value]) => (
+          {Object.entries(scheduleStats).map(([key, value]) => (
             <Grid item xs={6} sm={3} key={key}>
               <Card sx={{ textAlign: 'center' }}>
                 <CardContent sx={{ py: 1 }}>
@@ -604,8 +614,8 @@ function Schedules() {
               fullWidth
               size="small"
               placeholder="Search schedules..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
               InputProps={{
                 startAdornment: (
                   <InputAdornment position="start">
@@ -616,27 +626,36 @@ function Schedules() {
             />
           </Grid>
           
-          <Grid item xs={12} md={2}>
-            <FormControl fullWidth size="small">
-              <InputLabel>Device</InputLabel>
-              <Select
-                value={deviceFilter}
-                label="Device"
-                onChange={(e) => setDeviceFilter(e.target.value)}
-                MenuProps={{
-                  PaperProps: {
-                    style: { maxHeight: 200 }
-                  }
-                }}
-              >
-                <MenuItem value="">All Devices</MenuItem>
-                {devices.map(device => (
-                  <MenuItem key={device.id} value={device.id.toString()}>
-                    {device.name}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
+          <Grid item xs={12} md={3}>
+            <Autocomplete
+              options={[{ id: '', name: 'All Devices' }, ...[...devices].sort((a,b)=>a.name.localeCompare(b.name))]}
+              getOptionLabel={(option) => option.name}
+              value={
+                deviceFilter === ''
+                  ? { id: '', name: 'All Devices' }
+                  : devices.find(d => d.id.toString() === deviceFilter) || null
+              }
+              onChange={(event, newValue) => {
+                setDeviceFilter(newValue ? newValue.id.toString() : '');
+              }}
+              renderInput={(params) => (
+                <TextField
+                  {...params}
+                  label="Device"
+                  size="small"
+                  placeholder="Filter by device..."
+                />
+              )}
+              ListboxProps={{
+                style: { maxHeight: '200px' }
+              }}
+              noOptionsText="No devices found"
+              filterOptions={(options, { inputValue }) =>
+                options.filter(option =>
+                  option.name.toLowerCase().includes(inputValue.toLowerCase())
+                )
+              }
+            />
           </Grid>
 
           <Grid item xs={12} md={2}>
@@ -748,7 +767,7 @@ function Schedules() {
             renderScheduleTable(filteredSchedules)
           )
         ) : (
-          Object.entries(groupedSchedules()).map(([groupName, groupSchedules]) => (
+          Object.entries(groupedSchedules).map(([groupName, groupSchedules]) => (
             <Accordion key={groupName} defaultExpanded>
               <AccordionSummary expandIcon={<ExpandMoreIcon />}>
                 <Box display="flex" alignItems="center" gap={1}>
@@ -822,7 +841,7 @@ function Schedules() {
       </Menu>
 
       {/* Schedule Dialog - keeping existing dialog code */}
-      <Dialog open={open} onClose={handleCloseDialog} maxWidth="md" fullWidth>
+      <Dialog open={open} keepMounted onClose={handleCloseDialog} maxWidth="md" fullWidth>
         <DialogTitle>{editingSchedule ? 'Edit Schedule' : 'New Schedule'}</DialogTitle>
         <DialogContent>
           {apiError && <Alert severity="error" sx={{ mb: 2 }}>{apiError}</Alert>}
@@ -841,24 +860,32 @@ function Schedules() {
             </Grid>
 
             <Grid item xs={6}>
-              <TextField
-                select
-                label="Device"
-                value={deviceId}
-                onChange={e => setDeviceId(e.target.value)}
-                fullWidth
-                required
-                margin="normal"
-                SelectProps={{
-                  MenuProps: {
-                    PaperProps: {
-                      style: { maxHeight: 200 }
-                    }
-                  }
+              <Autocomplete
+                options={[...devices].sort((a,b)=>a.name.localeCompare(b.name))}
+                getOptionLabel={(option) => option.name}
+                value={devices.find(d => d.id.toString() === deviceId) || null}
+                onChange={(event, newValue) => {
+                  setDeviceId(newValue ? newValue.id.toString() : '');
                 }}
-              >
-                {devices.map(d => (<MenuItem key={d.id} value={d.id}>{d.name}</MenuItem>))}
-              </TextField>
+                renderInput={(params) => (
+                  <TextField
+                    {...params}
+                    label="Device"
+                    required
+                    margin="normal"
+                    fullWidth
+                  />
+                )}
+                ListboxProps={{
+                  style: { maxHeight: '200px' }
+                }}
+                noOptionsText="No devices found"
+                filterOptions={(options, { inputValue }) =>
+                  options.filter(option =>
+                    option.name.toLowerCase().includes(inputValue.toLowerCase())
+                  )
+                }
+              />
             </Grid>
 
             <Grid item xs={6}>

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useDeferredValue } from 'react';
 import {
   Paper,
   Typography,
@@ -62,6 +62,7 @@ function MediaManager() {
   const [uploading, setUploading] = useState(false);
   const [viewMode, setViewMode] = useState('list');
   const [searchTerm, setSearchTerm] = useState('');
+  const deferredSearch = useDeferredValue(searchTerm);
   const [selectedFolder, setSelectedFolder] = useState('');
   
   // Dialog states
@@ -95,14 +96,17 @@ function MediaManager() {
     fetchMedia();
   }, []);
 
-  // Filter media based on current folder and search
-  const filteredMedia = media.filter(file => {
-    const matchesFolder = selectedFolder === '' || 
-                         (selectedFolder === 'none' && !file.folder_id) ||
-                         file.folder_id?.toString() === selectedFolder;
-    const matchesSearch = file.filename.toLowerCase().includes(searchTerm.toLowerCase());
-    return matchesFolder && matchesSearch;
-  });
+  // Filter media based on current folder and deferred search; sort alphabetically
+  const filteredMedia = media
+    .filter(file => {
+      const matchesFolder = selectedFolder === '' || 
+                           (selectedFolder === 'none' && !file.folder_id) ||
+                           file.folder_id?.toString() === selectedFolder;
+      const term = (deferredSearch || '').toLowerCase();
+      const matchesSearch = file.filename.toLowerCase().includes(term);
+      return matchesFolder && matchesSearch;
+    })
+    .sort((a, b) => a.filename.localeCompare(b.filename, undefined, { sensitivity: 'base' }));
 
   const currentFolderData = folders.find(f => f.id?.toString() === selectedFolder);
 
@@ -449,21 +453,21 @@ function MediaManager() {
           </Grid>
         ) : (
           <TableContainer>
-            <Table size="small">
+            <Table size="small" sx={{ tableLayout: 'fixed' }}>
               <TableHead>
                 <TableRow>
-                  <TableCell>File</TableCell>
-                  <TableCell>Type</TableCell>
-                  <TableCell>Duration</TableCell>
-                  <TableCell>Folder</TableCell>
-                  <TableCell>Uploaded</TableCell>
-                  <TableCell align="right">Actions</TableCell>
+                  <TableCell sx={{ width: '40%' }}>File</TableCell>
+                  <TableCell sx={{ width: '15%' }}>Type</TableCell>
+                  <TableCell sx={{ width: 100 }}>Duration</TableCell>
+                  <TableCell sx={{ width: '20%' }}>Folder</TableCell>
+                  <TableCell sx={{ width: 140 }}>Uploaded</TableCell>
+                  <TableCell align="right" sx={{ width: 120 }}>Actions</TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
                 {filteredMedia.map(file => (
                   <TableRow key={file.id} hover>
-                    <TableCell>
+                    <TableCell sx={{ width: '40%' }}>
                       <Box display="flex" alignItems="center">
                         {getFileIcon(file.type)}
                         <Box ml={1}>
@@ -471,20 +475,20 @@ function MediaManager() {
                         </Box>
                       </Box>
                     </TableCell>
-                    <TableCell>
+                    <TableCell sx={{ width: '15%' }}>
                       <Chip label={file.type} size="small" variant="outlined" />
                     </TableCell>
-                    <TableCell>
+                    <TableCell sx={{ width: 100 }}>
                       {file.duration ? formatDuration(file.duration) : '-'}
                     </TableCell>
-                    <TableCell>
+                    <TableCell sx={{ width: '20%' }}>
                       {file.folder_id ? 
                         folders.find(f => f.id === file.folder_id)?.name || 'Unknown' : 
                         '-'
                       }
                     </TableCell>
-                    <TableCell>{new Date(file.upload_date).toLocaleDateString()}</TableCell>
-                    <TableCell align="right">
+                    <TableCell sx={{ width: 140 }}>{new Date(file.upload_date).toLocaleDateString()}</TableCell>
+                    <TableCell align="right" sx={{ width: 120 }}>
                       <IconButton
                         size="small"
                         onClick={(e) => handleMenuOpen(e, file)}

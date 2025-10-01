@@ -62,6 +62,7 @@ class MainActivity : Activity() {
     private var deviceName: String = "ARC-A-GR-18" // Default fallback
     private var cmsUrl: String = "http://192.168.1.10:5000" // Default fallback
     private var deviceId: Int? = null
+    private var deviceUuid: String? = null
 
     // Enhanced OkHttpClient with longer timeouts and retry
     private val client = OkHttpClient.Builder()
@@ -86,6 +87,7 @@ class MainActivity : Activity() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var lastSuccessfulConnection: Long = 0
     private var registrationCheckAttempts = 0 // For smarter registration polling
+    private var registrationPollingRunnable: Runnable? = null // Polling task reference
     private var connectionFailureCount = 0
     private var isNetworkAvailable = false
 
@@ -96,6 +98,54 @@ class MainActivity : Activity() {
 
     // State machine
     private enum class State { REGISTERING, IDLE, SYNCING, ERROR }
+
+// Preferred: check by durable UUID with IP fallback for compatibility
+private fun checkRegistrationByUuidOrIp(uuid: String, ip: String, pollingRunnable: Runnable) {
+    registrationCheckAttempts++
+
+    val uuidReq = Request.Builder()
+        .url("$cmsUrl/api/devices/check-registration/by-uuid/$uuid")
+        .get()
+        .build()
+
+    client.newCall(uuidReq).enqueue(object : Callback {
+        override fun onFailure(call: Call, e: IOException) {
+            // Fallback to IP check
+            checkRegistrationStatus(ip, pollingRunnable)
+        }
+
+        override fun onResponse(call: Call, response: Response) {
+            val body = response.body?.string()
+            if (response.isSuccessful && body != null) {
+                try {
+                    val json = JSONObject(body)
+                    val registered = json.getBoolean("registered")
+                    if (registered) {
+                        val deviceJson = json.getJSONObject("device")
+                        val newId = deviceJson.getInt("id")
+                        val newName = deviceJson.getString("name")
+                        runOnUiThread {
+                            stopRegistrationPolling()
+                            // Close registration dialog on success
+                            currentRegistrationDialog?.dismiss()
+                            saveDeviceId(newId)
+                            saveDeviceName(newName)
+                            deviceId = newId
+                            deviceName = newName
+                            setState(State.IDLE, "Device registered (via UUID)")
+                            startBackgroundTasks()
+                        }
+                        return
+                    }
+                } catch (_: Exception) {
+                    // ignore and fallback
+                }
+            }
+            // Not registered yet by UUID; fallback to IP (will handle its own retry loop)
+            checkRegistrationStatus(ip, pollingRunnable)
+        }
+    })
+}
 
     private var state: State = State.REGISTERING
 
@@ -186,6 +236,16 @@ class MainActivity : Activity() {
         loadDeviceName()?.let { savedName ->
             deviceName = savedName
             Log.i("GeekDS", "Loaded saved device name: '$deviceName'")
+        }
+
+        // Load or generate durable UUID
+        deviceUuid = loadDeviceUuid()
+        if (deviceUuid == null) {
+            deviceUuid = java.util.UUID.randomUUID().toString()
+            saveDeviceUuid(deviceUuid!!)
+            android.util.Log.i("GeekDS", "Generated new device UUID: ${deviceUuid}")
+        } else {
+            android.util.Log.i("GeekDS", "Loaded device UUID: ${deviceUuid}")
         }
 
         if (deviceId != null) {
@@ -334,6 +394,8 @@ class MainActivity : Activity() {
     // Replace your current handleConnectionError method with this:
     private fun handleConnectionError(operation: String, error: Throwable) {
         connectionFailureCount++
+    // Cap to prevent unbounded growth during very long offline periods
+    if (connectionFailureCount > 100) connectionFailureCount = 100
         val timeSinceLastSuccess = System.currentTimeMillis() - lastSuccessfulConnection
 
         Log.e("GeekDS", "Connection error in $operation (failure #$connectionFailureCount): $error")
@@ -353,12 +415,19 @@ class MainActivity : Activity() {
         val backoffTime = minOf(30_000L * connectionFailureCount, 120_000L)
         Log.i("GeekDS", "Will retry in ${backoffTime / 1000}s")
 
+        // IMPORTANT: Avoid stacking retries for heartbeat because a dedicated loop already triggers it every 30s.
+        // Stacked handler retries caused long-term offline crashes due to many queued Runnables.
+        if (operation == "heartbeat") {
+            Log.i("GeekDS", "Skipping explicit handler retry for heartbeat; main loop will attempt again.")
+            return
+        }
+
         handler.postDelayed({
             if (isNetworkConnected()) {
                 Log.i("GeekDS", "Retrying $operation after backoff")
                 when (operation) {
                     "registration" -> showRegistrationScreen()
-                    "heartbeat" -> sendHeartbeat()
+                    "heartbeat" -> sendHeartbeat() // (Normally skipped above, retained for completeness)
                     "sync" -> syncScheduleAndMedia()
                 }
             }
@@ -434,6 +503,61 @@ class MainActivity : Activity() {
             .getString("device_name", null)
     }
 
+    private fun saveDeviceUuid(uuid: String) {
+        getSharedPreferences("geekds_prefs", MODE_PRIVATE)
+            .edit()
+            .putString("device_uuid", uuid)
+            .apply()
+        Log.i("GeekDS", "Device UUID saved: '$uuid'")
+    }
+
+    private fun loadDeviceUuid(): String? {
+        return getSharedPreferences("geekds_prefs", MODE_PRIVATE)
+            .getString("device_uuid", null)
+    }
+
+    // Claim or (re)create device on the server using durable UUID
+    // Callback returns (success, newId)
+    private fun claimDeviceByUuid(uuid: String, callback: (Boolean, Int?) -> Unit) {
+        val ip = getLocalIpAddress() ?: "unknown"
+        val body = JSONObject().apply {
+            put("uuid", uuid)
+            put("name", deviceName)
+            put("ip", ip)
+            put("system_info", JSONObject().apply {
+                put("device_name", deviceName)
+                put("current_ip", ip)
+            })
+        }.toString().toRequestBody("application/json".toMediaType())
+
+        val req = Request.Builder()
+            .url("$cmsUrl/api/devices/claim")
+            .post(body)
+            .build()
+
+        client.newCall(req).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                callback(false, null)
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                try {
+                    val resp = response.body?.string()
+                    if (!response.isSuccessful || resp == null) {
+                        callback(false, null)
+                        return
+                    }
+                    val obj = JSONObject(resp)
+                    val device = obj.getJSONObject("device")
+                    val newId = device.getInt("id")
+                    callback(true, newId)
+                } catch (e: Exception) {
+                    callback(false, null)
+                }
+            }
+        })
+    }
+
     // Utility: Get current device IP address (IPv4, non-loopback)
     private fun getLocalIpAddress(): String? {
         val interfaces = Collections.list(NetworkInterface.getNetworkInterfaces())
@@ -493,7 +617,7 @@ class MainActivity : Activity() {
             }
         }
 
-        // Command polling every 10 seconds with network checking (faster)
+        // Command polling every 20 seconds with network checking (aligned with sync)
         scope.launch {
             while (isActive) {
                 try {
@@ -503,7 +627,7 @@ class MainActivity : Activity() {
                 } catch (e: Exception) {
                     Log.e("GeekDS", "Error in command polling", e)
                 }
-                delay(10 * 1000L)
+                delay(20 * 1000L)
             }
         }
 
@@ -578,6 +702,7 @@ class MainActivity : Activity() {
         val currentIp = getLocalIpAddress() ?: "unknown"
         json.put("ip", currentIp)
 
+        json.put("uuid", deviceUuid ?: "")
         json.put("system_info", JSONObject().apply {
             put("cpu", 10)
             put("memory", 30)
@@ -635,8 +760,10 @@ class MainActivity : Activity() {
                         Log.d("GeekDS", "Heartbeat sent with updated device info - name: '$deviceName', ip: '$currentIp'")
                     }
                     404 -> {
-                        // Device was deleted from CMS!
-                        Log.w("GeekDS", "Device $id was deleted from CMS - clearing registration")
+                        // Device was deleted from CMS: enter registration flow
+                        // During registration we poll by UUID first; if the device was manually reinserted,
+                        // polling /check-registration/by-uuid/:uuid will auto-complete without a code.
+                        Log.w("GeekDS", "Device $id was deleted from CMS - entering registration flow")
                         clearDeviceRegistration()
                         showRegistrationScreen()
                     }
@@ -656,8 +783,14 @@ class MainActivity : Activity() {
             apply()
         }
 
-        // Also clear from main prefs and reset device name
-        getSharedPreferences("geekds_prefs", MODE_PRIVATE).edit().clear().apply()
+        // Also clear selected keys from main prefs (preserve device_uuid) and reset device name
+        val mainPrefs = getSharedPreferences("geekds_prefs", MODE_PRIVATE)
+        mainPrefs.edit()
+            .remove("device_id")
+            .remove("device_name")
+            .remove("schedule")
+            .remove("playlist")
+            .apply()
         deviceName = "ARC-A-GR-18" // Reset to default
 
         // Stop all background activities
@@ -704,6 +837,9 @@ class MainActivity : Activity() {
             showWaitingDialog()
 
             // Request a registration code from the server
+            val ip = getLocalIpAddress() ?: "unknown"
+            // Start polling immediately by IP/UUID as a safety net
+            startRegistrationPolling(ip)
             requestRegistrationCode()
         }
     }
@@ -783,8 +919,6 @@ class MainActivity : Activity() {
             .show()
     }
 
-    private var registrationPollingRunnable: Runnable? = null
-
     private fun startRegistrationPolling(ip: String) {
         // Stop any existing polling
         registrationPollingRunnable?.let { handler.removeCallbacks(it) }
@@ -792,27 +926,34 @@ class MainActivity : Activity() {
 
         registrationPollingRunnable = object : Runnable {
             override fun run() {
-                checkRegistrationStatus(ip, this)
+                val attempt = registrationCheckAttempts + 1
+                Log.d("GeekDS", "[REGISTERING] Poll attempt=$attempt")
+                val uuid = deviceUuid
+                if (uuid != null) {
+                    Log.d("GeekDS", "[REGISTERING] Checking by UUID: $uuid (fallback to IP $ip)")
+                    checkRegistrationByUuidOrIp(uuid, ip, this)
+                } else {
+                    Log.d("GeekDS", "[REGISTERING] Checking by IP: $ip")
+                    checkRegistrationStatus(ip, this)
+                }
             }
         }
 
         // Start polling immediately
-        registrationPollingRunnable?.let { handler.post(it) }
+        Log.d("GeekDS", "[REGISTERING] Starting polling loop now")
+        handler.post(registrationPollingRunnable!!)
     }
 
-    private fun stopRegistrationPolling() {
-        registrationPollingRunnable?.let { handler.removeCallbacks(it) }
-        registrationPollingRunnable = null
-    }
-
+    // Exponential backoff for registration polling: 1s, 2s, 4s, 8s, 15s max
     private fun calculateRegistrationDelay(): Long {
-        // Exponential backoff: 1s, 2s, 4s, 8s, 15s max
         val baseDelay = 1000L
         val maxDelay = 15000L
-        val calculatedDelay = minOf(baseDelay * (1 shl minOf(registrationCheckAttempts - 1, 4)), maxDelay)
-        return calculatedDelay
+        val attempt = if (registrationCheckAttempts < 1) 1 else registrationCheckAttempts
+        val delay = baseDelay * (1L shl minOf(attempt - 1, 4))
+        return minOf(delay, maxDelay)
     }
 
+    // Fallback IP-based registration polling with smart retry
     private fun checkRegistrationStatus(ip: String, pollingRunnable: Runnable) {
         registrationCheckAttempts++
 
@@ -823,9 +964,9 @@ class MainActivity : Activity() {
 
         client.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
-                // Continue polling on failure with exponential backoff
                 if (state == State.REGISTERING) {
                     val delay = calculateRegistrationDelay()
+                    Log.d("GeekDS", "[REGISTERING] IP check failed, retrying in ${delay}ms: ${e.message}")
                     handler.postDelayed(pollingRunnable, delay)
                 }
             }
@@ -846,44 +987,43 @@ class MainActivity : Activity() {
                             runOnUiThread {
                                 stopRegistrationPolling()
                                 currentRegistrationDialog?.dismiss()
-
-                                deviceId = newDeviceId
                                 saveDeviceId(newDeviceId)
-
-                                // Update device name from server
-                                deviceName = newDeviceName
                                 saveDeviceName(newDeviceName)
-
-                                setState(State.IDLE, "Device registered successfully - ID: $newDeviceId, Name: '$newDeviceName'")
-
-                                // Start normal operations immediately
+                                deviceId = newDeviceId
+                                deviceName = newDeviceName
+                                setState(State.IDLE, "Device registered (via IP)")
                                 startBackgroundTasks()
-
-                                Log.i("GeekDS", "Registration completed! Device ID: $newDeviceId, Name: '$newDeviceName'")
                             }
+                            return
                         } else {
-                            // Continue polling only if still in registration state with exponential backoff
                             if (state == State.REGISTERING) {
                                 val delay = calculateRegistrationDelay()
+                                Log.d("GeekDS", "[REGISTERING] Not registered by IP yet, retry in ${delay}ms")
                                 handler.postDelayed(pollingRunnable, delay)
                             }
                         }
                     } catch (e: Exception) {
-                        // Continue polling on parse error with exponential backoff
                         if (state == State.REGISTERING) {
                             val delay = calculateRegistrationDelay()
+                            Log.d("GeekDS", "[REGISTERING] Parse error, retry in ${delay}ms: ${e.message}")
                             handler.postDelayed(pollingRunnable, delay)
                         }
                     }
                 } else {
-                    // Continue polling on error with exponential backoff
                     if (state == State.REGISTERING) {
                         val delay = calculateRegistrationDelay()
+                        Log.d("GeekDS", "[REGISTERING] HTTP ${response.code}, retry in ${delay}ms")
                         handler.postDelayed(pollingRunnable, delay)
                     }
                 }
             }
         })
+    }
+
+    private fun stopRegistrationPolling() {
+        registrationPollingRunnable?.let { handler.removeCallbacks(it) }
+        Log.d("GeekDS", "[REGISTERING] Stopped polling loop")
+        registrationPollingRunnable = null
     }
 
     private fun showRegistrationDialog(code: String) {
@@ -994,7 +1134,8 @@ class MainActivity : Activity() {
                             // Check validity period
                             // Parse validity dates with flexible format support
                             fun parseValidityDate(dateStr: String?): LocalDate? {
-                                if (dateStr == null) return null
+                                // Treat null, "null", or blank as no limit (always valid)
+                                if (dateStr == null || dateStr.trim().isEmpty() || dateStr.equals("null", ignoreCase = true)) return null
                                 return try {
                                     // Try parsing as ISO datetime first
                                     ZonedDateTime.parse(dateStr).toLocalDate()
@@ -1555,7 +1696,7 @@ class MainActivity : Activity() {
         val id = deviceId ?: return
 
         val req = Request.Builder()
-            .url("$cmsUrl/api/devices/$id/commands")
+            .url("$cmsUrl/api/devices/$id/commands/poll")
             .get()
             .build()
 
@@ -1734,14 +1875,14 @@ class MainActivity : Activity() {
 
         // Check validity period
         fun parseValidityDate(isoString: String?): LocalDate? {
-            if (isoString == null) return null
+            // Treat null, "null", or blank as no limit (always valid)
+            if (isoString == null || isoString.trim().isEmpty() || isoString.equals("null", ignoreCase = true)) return null
             return try {
                 // First try parsing as full ISO datetime
-                val dt = ZonedDateTime.parse(isoString)
-                dt.toLocalDate()
+                ZonedDateTime.parse(isoString).toLocalDate()
             } catch (e: Exception) {
                 try {
-                    // Then try parsing as simple date
+                    // Then try date-only
                     LocalDate.parse(isoString)
                 } catch (e: Exception) {
                     Log.e("GeekDS", "Failed to parse validity date: $isoString", e)

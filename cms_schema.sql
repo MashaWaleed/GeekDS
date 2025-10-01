@@ -17,7 +17,21 @@ SET client_min_messages = warning;
 SET row_security = off;
 
 --
--- Name: update_folder_timestamp(); Type: FUNCTION; Schema: public; Owner: postgres
+-- Name: pgcrypto; Type: EXTENSION; Schema: -; Owner: -
+--
+
+CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public;
+
+
+--
+-- Name: EXTENSION pgcrypto; Type: COMMENT; Schema: -; Owner: -
+--
+
+COMMENT ON EXTENSION pgcrypto IS 'cryptographic functions';
+
+
+--
+-- Name: update_folder_timestamp(); Type: FUNCTION; Schema: public; Owner: -
 --
 
 CREATE FUNCTION public.update_folder_timestamp() RETURNS trigger
@@ -30,10 +44,8 @@ END;
 $$;
 
 
-ALTER FUNCTION public.update_folder_timestamp() OWNER TO postgres;
-
 --
--- Name: update_playlist_timestamp(); Type: FUNCTION; Schema: public; Owner: postgres
+-- Name: update_playlist_timestamp(); Type: FUNCTION; Schema: public; Owner: -
 --
 
 CREATE FUNCTION public.update_playlist_timestamp() RETURNS trigger
@@ -51,10 +63,8 @@ END;
 $$;
 
 
-ALTER FUNCTION public.update_playlist_timestamp() OWNER TO postgres;
-
 --
--- Name: update_updated_at_column(); Type: FUNCTION; Schema: public; Owner: postgres
+-- Name: update_updated_at_column(); Type: FUNCTION; Schema: public; Owner: -
 --
 
 CREATE FUNCTION public.update_updated_at_column() RETURNS trigger
@@ -67,14 +77,12 @@ END;
 $$;
 
 
-ALTER FUNCTION public.update_updated_at_column() OWNER TO postgres;
-
 SET default_tablespace = '';
 
 SET default_table_access_method = heap;
 
 --
--- Name: device_commands; Type: TABLE; Schema: public; Owner: postgres
+-- Name: device_commands; Type: TABLE; Schema: public; Owner: -
 --
 
 CREATE TABLE public.device_commands (
@@ -88,10 +96,8 @@ CREATE TABLE public.device_commands (
 );
 
 
-ALTER TABLE public.device_commands OWNER TO postgres;
-
 --
--- Name: device_commands_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+-- Name: device_commands_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
 CREATE SEQUENCE public.device_commands_id_seq
@@ -103,17 +109,15 @@ CREATE SEQUENCE public.device_commands_id_seq
     CACHE 1;
 
 
-ALTER TABLE public.device_commands_id_seq OWNER TO postgres;
-
 --
--- Name: device_commands_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+-- Name: device_commands_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.device_commands_id_seq OWNED BY public.device_commands.id;
 
 
 --
--- Name: devices; Type: TABLE; Schema: public; Owner: postgres
+-- Name: devices; Type: TABLE; Schema: public; Owner: -
 --
 
 CREATE TABLE public.devices (
@@ -123,14 +127,13 @@ CREATE TABLE public.devices (
     status text NOT NULL,
     last_ping timestamp without time zone NOT NULL,
     current_media text,
-    system_info jsonb
+    system_info jsonb,
+    uuid uuid DEFAULT gen_random_uuid() NOT NULL
 );
 
 
-ALTER TABLE public.devices OWNER TO postgres;
-
 --
--- Name: devices_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+-- Name: devices_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
 CREATE SEQUENCE public.devices_id_seq
@@ -142,17 +145,15 @@ CREATE SEQUENCE public.devices_id_seq
     CACHE 1;
 
 
-ALTER TABLE public.devices_id_seq OWNER TO postgres;
-
 --
--- Name: devices_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+-- Name: devices_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.devices_id_seq OWNED BY public.devices.id;
 
 
 --
--- Name: folders; Type: TABLE; Schema: public; Owner: postgres
+-- Name: folders; Type: TABLE; Schema: public; Owner: -
 --
 
 CREATE TABLE public.folders (
@@ -166,10 +167,8 @@ CREATE TABLE public.folders (
 );
 
 
-ALTER TABLE public.folders OWNER TO postgres;
-
 --
--- Name: folders_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+-- Name: folders_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
 CREATE SEQUENCE public.folders_id_seq
@@ -181,17 +180,15 @@ CREATE SEQUENCE public.folders_id_seq
     CACHE 1;
 
 
-ALTER TABLE public.folders_id_seq OWNER TO postgres;
-
 --
--- Name: folders_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+-- Name: folders_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.folders_id_seq OWNED BY public.folders.id;
 
 
 --
--- Name: media_files; Type: TABLE; Schema: public; Owner: postgres
+-- Name: media_files; Type: TABLE; Schema: public; Owner: -
 --
 
 CREATE TABLE public.media_files (
@@ -205,10 +202,8 @@ CREATE TABLE public.media_files (
 );
 
 
-ALTER TABLE public.media_files OWNER TO postgres;
-
 --
--- Name: media_files_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+-- Name: media_files_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
 CREATE SEQUENCE public.media_files_id_seq
@@ -220,17 +215,15 @@ CREATE SEQUENCE public.media_files_id_seq
     CACHE 1;
 
 
-ALTER TABLE public.media_files_id_seq OWNER TO postgres;
-
 --
--- Name: media_files_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+-- Name: media_files_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.media_files_id_seq OWNED BY public.media_files.id;
 
 
 --
--- Name: playlist_media; Type: TABLE; Schema: public; Owner: postgres
+-- Name: playlist_media; Type: TABLE; Schema: public; Owner: -
 --
 
 CREATE TABLE public.playlist_media (
@@ -240,10 +233,8 @@ CREATE TABLE public.playlist_media (
 );
 
 
-ALTER TABLE public.playlist_media OWNER TO postgres;
-
 --
--- Name: playlists; Type: TABLE; Schema: public; Owner: postgres
+-- Name: playlists; Type: TABLE; Schema: public; Owner: -
 --
 
 CREATE TABLE public.playlists (
@@ -254,10 +245,8 @@ CREATE TABLE public.playlists (
 );
 
 
-ALTER TABLE public.playlists OWNER TO postgres;
-
 --
--- Name: playlists_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+-- Name: playlists_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
 CREATE SEQUENCE public.playlists_id_seq
@@ -269,17 +258,15 @@ CREATE SEQUENCE public.playlists_id_seq
     CACHE 1;
 
 
-ALTER TABLE public.playlists_id_seq OWNER TO postgres;
-
 --
--- Name: playlists_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+-- Name: playlists_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.playlists_id_seq OWNED BY public.playlists.id;
 
 
 --
--- Name: schedules; Type: TABLE; Schema: public; Owner: postgres
+-- Name: schedules; Type: TABLE; Schema: public; Owner: -
 --
 
 CREATE TABLE public.schedules (
@@ -299,10 +286,8 @@ CREATE TABLE public.schedules (
 );
 
 
-ALTER TABLE public.schedules OWNER TO postgres;
-
 --
--- Name: schedules_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+-- Name: schedules_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
 CREATE SEQUENCE public.schedules_id_seq
@@ -314,17 +299,15 @@ CREATE SEQUENCE public.schedules_id_seq
     CACHE 1;
 
 
-ALTER TABLE public.schedules_id_seq OWNER TO postgres;
-
 --
--- Name: schedules_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+-- Name: schedules_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.schedules_id_seq OWNED BY public.schedules.id;
 
 
 --
--- Name: screenshot_requests; Type: TABLE; Schema: public; Owner: postgres
+-- Name: screenshot_requests; Type: TABLE; Schema: public; Owner: -
 --
 
 CREATE TABLE public.screenshot_requests (
@@ -339,10 +322,29 @@ CREATE TABLE public.screenshot_requests (
 );
 
 
-ALTER TABLE public.screenshot_requests OWNER TO postgres;
+--
+-- Name: TABLE screenshot_requests; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.screenshot_requests IS 'Tracks screenshot requests from devices with status and results';
+
 
 --
--- Name: screenshot_requests_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+-- Name: COLUMN screenshot_requests.screenshot_filename; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.screenshot_requests.screenshot_filename IS 'Filename of uploaded screenshot (when status=completed)';
+
+
+--
+-- Name: COLUMN screenshot_requests.error_message; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.screenshot_requests.error_message IS 'Error details when status=failed';
+
+
+--
+-- Name: screenshot_requests_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
 CREATE SEQUENCE public.screenshot_requests_id_seq
@@ -354,66 +356,64 @@ CREATE SEQUENCE public.screenshot_requests_id_seq
     CACHE 1;
 
 
-ALTER TABLE public.screenshot_requests_id_seq OWNER TO postgres;
-
 --
--- Name: screenshot_requests_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+-- Name: screenshot_requests_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.screenshot_requests_id_seq OWNED BY public.screenshot_requests.id;
 
 
 --
--- Name: device_commands id; Type: DEFAULT; Schema: public; Owner: postgres
+-- Name: device_commands id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.device_commands ALTER COLUMN id SET DEFAULT nextval('public.device_commands_id_seq'::regclass);
 
 
 --
--- Name: devices id; Type: DEFAULT; Schema: public; Owner: postgres
+-- Name: devices id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.devices ALTER COLUMN id SET DEFAULT nextval('public.devices_id_seq'::regclass);
 
 
 --
--- Name: folders id; Type: DEFAULT; Schema: public; Owner: postgres
+-- Name: folders id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.folders ALTER COLUMN id SET DEFAULT nextval('public.folders_id_seq'::regclass);
 
 
 --
--- Name: media_files id; Type: DEFAULT; Schema: public; Owner: postgres
+-- Name: media_files id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.media_files ALTER COLUMN id SET DEFAULT nextval('public.media_files_id_seq'::regclass);
 
 
 --
--- Name: playlists id; Type: DEFAULT; Schema: public; Owner: postgres
+-- Name: playlists id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.playlists ALTER COLUMN id SET DEFAULT nextval('public.playlists_id_seq'::regclass);
 
 
 --
--- Name: schedules id; Type: DEFAULT; Schema: public; Owner: postgres
+-- Name: schedules id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.schedules ALTER COLUMN id SET DEFAULT nextval('public.schedules_id_seq'::regclass);
 
 
 --
--- Name: screenshot_requests id; Type: DEFAULT; Schema: public; Owner: postgres
+-- Name: screenshot_requests id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.screenshot_requests ALTER COLUMN id SET DEFAULT nextval('public.screenshot_requests_id_seq'::regclass);
 
 
 --
--- Name: device_commands device_commands_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+-- Name: device_commands device_commands_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.device_commands
@@ -421,7 +421,7 @@ ALTER TABLE ONLY public.device_commands
 
 
 --
--- Name: devices devices_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+-- Name: devices devices_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.devices
@@ -429,7 +429,7 @@ ALTER TABLE ONLY public.devices
 
 
 --
--- Name: folders folders_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+-- Name: folders folders_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.folders
@@ -437,7 +437,7 @@ ALTER TABLE ONLY public.folders
 
 
 --
--- Name: media_files media_files_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+-- Name: media_files media_files_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.media_files
@@ -445,7 +445,7 @@ ALTER TABLE ONLY public.media_files
 
 
 --
--- Name: playlist_media playlist_media_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+-- Name: playlist_media playlist_media_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.playlist_media
@@ -453,7 +453,7 @@ ALTER TABLE ONLY public.playlist_media
 
 
 --
--- Name: playlists playlists_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+-- Name: playlists playlists_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.playlists
@@ -461,7 +461,7 @@ ALTER TABLE ONLY public.playlists
 
 
 --
--- Name: schedules schedules_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+-- Name: schedules schedules_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.schedules
@@ -469,7 +469,7 @@ ALTER TABLE ONLY public.schedules
 
 
 --
--- Name: screenshot_requests screenshot_requests_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+-- Name: screenshot_requests screenshot_requests_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.screenshot_requests
@@ -477,63 +477,154 @@ ALTER TABLE ONLY public.screenshot_requests
 
 
 --
--- Name: idx_folders_parent; Type: INDEX; Schema: public; Owner: postgres
+-- Name: devices_uuid_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX devices_uuid_key ON public.devices USING btree (uuid);
+
+
+--
+-- Name: idx_device_commands_created; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_device_commands_created ON public.device_commands USING btree (created_at);
+
+
+--
+-- Name: idx_device_commands_dev_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_device_commands_dev_status ON public.device_commands USING btree (device_id, status);
+
+
+--
+-- Name: idx_devices_ip; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_devices_ip ON public.devices USING btree (ip);
+
+
+--
+-- Name: idx_devices_last_ping; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_devices_last_ping ON public.devices USING btree (last_ping);
+
+
+--
+-- Name: idx_devices_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_devices_status ON public.devices USING btree (status);
+
+
+--
+-- Name: idx_folders_parent; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_folders_parent ON public.folders USING btree (parent_id);
 
 
 --
--- Name: idx_folders_type; Type: INDEX; Schema: public; Owner: postgres
+-- Name: idx_folders_type; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_folders_type ON public.folders USING btree (type);
 
 
 --
--- Name: idx_media_files_folder; Type: INDEX; Schema: public; Owner: postgres
+-- Name: idx_media_files_folder; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_media_files_folder ON public.media_files USING btree (folder_id);
 
 
 --
--- Name: idx_playlists_folder; Type: INDEX; Schema: public; Owner: postgres
+-- Name: idx_playlists_folder; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_playlists_folder ON public.playlists USING btree (folder_id);
 
 
 --
--- Name: folders update_folders_updated_at; Type: TRIGGER; Schema: public; Owner: postgres
+-- Name: idx_schedules_days; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_schedules_days ON public.schedules USING gin (days_of_week);
+
+
+--
+-- Name: idx_schedules_device; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_schedules_device ON public.schedules USING btree (device_id);
+
+
+--
+-- Name: idx_schedules_device_time; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_schedules_device_time ON public.schedules USING btree (device_id, time_slot_start, time_slot_end);
+
+
+--
+-- Name: idx_screenshot_requests_dev_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_screenshot_requests_dev_status ON public.screenshot_requests USING btree (device_id, status);
+
+
+--
+-- Name: idx_screenshot_requests_dev_time; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_screenshot_requests_dev_time ON public.screenshot_requests USING btree (device_id, requested_at DESC);
+
+
+--
+-- Name: idx_screenshot_requests_device_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_screenshot_requests_device_status ON public.screenshot_requests USING btree (device_id, status);
+
+
+--
+-- Name: idx_screenshot_requests_requested_at; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_screenshot_requests_requested_at ON public.screenshot_requests USING btree (requested_at);
+
+
+--
+-- Name: folders update_folders_updated_at; Type: TRIGGER; Schema: public; Owner: -
 --
 
 CREATE TRIGGER update_folders_updated_at BEFORE UPDATE ON public.folders FOR EACH ROW EXECUTE FUNCTION public.update_folder_timestamp();
 
 
 --
--- Name: playlist_media update_playlists_on_media_change; Type: TRIGGER; Schema: public; Owner: postgres
+-- Name: playlist_media update_playlists_on_media_change; Type: TRIGGER; Schema: public; Owner: -
 --
 
 CREATE TRIGGER update_playlists_on_media_change AFTER INSERT OR DELETE OR UPDATE ON public.playlist_media FOR EACH ROW EXECUTE FUNCTION public.update_playlist_timestamp();
 
 
 --
--- Name: playlists update_playlists_updated_at; Type: TRIGGER; Schema: public; Owner: postgres
+-- Name: playlists update_playlists_updated_at; Type: TRIGGER; Schema: public; Owner: -
 --
 
 CREATE TRIGGER update_playlists_updated_at BEFORE UPDATE ON public.playlists FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
 
 
 --
--- Name: schedules update_schedules_updated_at; Type: TRIGGER; Schema: public; Owner: postgres
+-- Name: schedules update_schedules_updated_at; Type: TRIGGER; Schema: public; Owner: -
 --
 
 CREATE TRIGGER update_schedules_updated_at BEFORE UPDATE ON public.schedules FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
 
 
 --
--- Name: device_commands device_commands_device_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+-- Name: device_commands device_commands_device_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.device_commands
@@ -541,7 +632,7 @@ ALTER TABLE ONLY public.device_commands
 
 
 --
--- Name: folders folders_parent_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+-- Name: folders folders_parent_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.folders
@@ -549,7 +640,7 @@ ALTER TABLE ONLY public.folders
 
 
 --
--- Name: media_files media_files_folder_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+-- Name: media_files media_files_folder_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.media_files
@@ -557,7 +648,7 @@ ALTER TABLE ONLY public.media_files
 
 
 --
--- Name: playlist_media playlist_media_media_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+-- Name: playlist_media playlist_media_media_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.playlist_media
@@ -565,7 +656,7 @@ ALTER TABLE ONLY public.playlist_media
 
 
 --
--- Name: playlist_media playlist_media_playlist_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+-- Name: playlist_media playlist_media_playlist_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.playlist_media
@@ -573,7 +664,7 @@ ALTER TABLE ONLY public.playlist_media
 
 
 --
--- Name: playlists playlists_folder_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+-- Name: playlists playlists_folder_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.playlists
@@ -581,7 +672,7 @@ ALTER TABLE ONLY public.playlists
 
 
 --
--- Name: schedules schedules_device_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+-- Name: schedules schedules_device_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.schedules
@@ -589,7 +680,7 @@ ALTER TABLE ONLY public.schedules
 
 
 --
--- Name: schedules schedules_playlist_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+-- Name: schedules schedules_playlist_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.schedules
@@ -597,7 +688,7 @@ ALTER TABLE ONLY public.schedules
 
 
 --
--- Name: screenshot_requests screenshot_requests_device_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+-- Name: screenshot_requests screenshot_requests_device_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.screenshot_requests

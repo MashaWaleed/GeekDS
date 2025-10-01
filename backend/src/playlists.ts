@@ -1,10 +1,11 @@
 import { Router } from 'express';
 import { pool } from './models';
+import { cacheMiddleware, invalidateCache, CACHE_KEYS, CACHE_TTL } from './redis';
 
 const router = Router();
 
-// List all playlists
-router.get('/', async (req, res) => {
+// List all playlists (cached)
+router.get('/', cacheMiddleware(CACHE_KEYS.PLAYLISTS, CACHE_TTL.PLAYLISTS), async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT p.*, f.name as folder_name 
@@ -38,6 +39,9 @@ router.post('/', async (req, res) => {
         );
       }
     }
+    // Invalidate playlists and schedules caches (schedules join playlist fields and devices rely on playlist updates)
+    await invalidateCache(CACHE_KEYS.PLAYLISTS + '*');
+    await invalidateCache(CACHE_KEYS.SCHEDULES + '*');
     res.status(201).json(playlist);
   } catch (error) {
     console.error('Error creating playlist:', error);
@@ -96,6 +100,9 @@ router.patch('/:id', async (req, res) => {
       await pool.query('UPDATE playlists SET updated_at = NOW() WHERE id = $1', [id]);
     }
     
+    // Invalidate playlists and schedules caches
+    await invalidateCache(CACHE_KEYS.PLAYLISTS + '*');
+    await invalidateCache(CACHE_KEYS.SCHEDULES + '*');
     res.json({ success: true });
   } catch (error) {
     console.error('Error updating playlist:', error);
@@ -107,6 +114,9 @@ router.patch('/:id', async (req, res) => {
 router.delete('/:id', async (req, res) => {
   const { id } = req.params;
   await pool.query('DELETE FROM playlists WHERE id = $1', [id]);
+  // Invalidate playlists and schedules caches
+  await invalidateCache(CACHE_KEYS.PLAYLISTS + '*');
+  await invalidateCache(CACHE_KEYS.SCHEDULES + '*');
   res.json({ success: true });
 });
 

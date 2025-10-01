@@ -1,4 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState, useTransition, useDeferredValue } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { FixedSizeList as List } from 'react-window';
 import {
   Paper,
   Typography,
@@ -61,7 +63,7 @@ style.textContent = `
 document.head.appendChild(style);
 
 function DeviceGrid() {
-  const [devices, setDevices] = useState([]);
+  const queryClient = useQueryClient();
   const [loading, setLoading] = useState(true);
   const [cmdOpen, setCmdOpen] = useState(false);
   const [cmdDevice, setCmdDevice] = useState(null);
@@ -69,10 +71,13 @@ function DeviceGrid() {
   const [parameters, setParameters] = useState('{}');
   
   // Enhanced UI state
+  // Search state (transitioned for responsiveness)
+  const [searchInput, setSearchInput] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
+  const [isPending, startTransition] = useTransition();
   const [statusFilter, setStatusFilter] = useState('all');
-  const [viewMode, setViewMode] = useState('grid'); // 'grid' or 'table'
-  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [viewMode, setViewMode] = useState('table'); // make 'table' the default
+  const [autoRefresh, setAutoRefresh] = useState(false);
 
   // New registration and management state
   const [registerOpen, setRegisterOpen] = useState(false);
@@ -92,18 +97,23 @@ function DeviceGrid() {
 
   const API_URL = process.env.REACT_APP_API_URL;
 
+  // Devices query with client-side cache and background refresh
+  const { data: devices = [], isFetching, refetch } = useQuery({
+    queryKey: ['devices'],
+    queryFn: async () => {
+      const res = await fetch(`${API_URL}/api/devices`);
+      if (!res.ok) throw new Error('Failed to load devices');
+      return res.json();
+    },
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+  });
+
+  // Removed debounce: useTransition schedules updates without blocking typing
+
   const fetchDevices = () => {
     setLoading(true);
-    fetch(`${API_URL}/api/devices`)
-      .then(res => res.json())
-      .then(data => {
-        setDevices(data);
-        setLoading(false);
-      })
-      .catch(error => {
-        console.error('Error fetching devices:', error);
-        setLoading(false);
-      });
+    refetch().finally(() => setLoading(false));
   };
 
   // NEW: Device registration handler
@@ -132,7 +142,7 @@ function DeviceGrid() {
         setRegisterOpen(false);
         setRegistrationCode('');
         setDeviceName('');
-        fetchDevices();
+        await queryClient.invalidateQueries({ queryKey: ['devices'] });
       } else {
         setSnackbar({ open: true, message: data.error || 'Registration failed', severity: 'error' });
       }
@@ -167,7 +177,7 @@ function DeviceGrid() {
         setSnackbar({ open: true, message: 'Device updated successfully!', severity: 'success' });
         setEditOpen(false);
         setEditDevice(null);
-        fetchDevices();
+        await queryClient.invalidateQueries({ queryKey: ['devices'] });
       } else {
         setSnackbar({ open: true, message: data.error || 'Update failed', severity: 'error' });
       }
@@ -192,7 +202,7 @@ function DeviceGrid() {
         setSnackbar({ open: true, message: 'Device deleted successfully!', severity: 'success' });
         setDeleteOpen(false);
         setDeviceToDelete(null);
-        fetchDevices();
+        await queryClient.invalidateQueries({ queryKey: ['devices'] });
       } else {
         setSnackbar({ open: true, message: data.error || 'Deletion failed', severity: 'error' });
       }
@@ -271,26 +281,37 @@ function DeviceGrid() {
     // Auto-refresh every 30 seconds if enabled
     let interval;
     if (autoRefresh) {
-      interval = setInterval(fetchDevices, 30000);
+      interval = setInterval(() => refetch(), 30000);
     }
     
     return () => {
       if (interval) clearInterval(interval);
     };
-  }, [autoRefresh]);
+  }, [autoRefresh, refetch]);
 
-  // Filter devices based on search and status
-  const filteredDevices = devices.filter(device => {
-    const matchesSearch = device.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         device.ip.includes(searchTerm);
-    const matchesStatus = statusFilter === 'all' || device.status === statusFilter;
-    return matchesSearch && matchesStatus;
-  });
+  // Filter devices based on search and status (memoized), with deferred search term to avoid blocking
+  const deferredTerm = useDeferredValue(searchTerm);
+  const filteredDevices = useMemo(() => {
+    const term = (deferredTerm || '').toLowerCase();
+    const result = devices.filter(device => {
+      const matchesSearch = device.name.toLowerCase().includes(term) ||
+                           device.ip.includes(deferredTerm || '');
+      const matchesStatus = statusFilter === 'all' || device.status === statusFilter;
+      return matchesSearch && matchesStatus;
+    });
+    // Sort alphabetically by name for consistent ordering
+    result.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+    return result;
+  }, [devices, deferredTerm, statusFilter]);
 
-  // Calculate statistics
-  const onlineDevices = devices.filter(d => d.status === 'online').length;
-  const offlineDevices = devices.filter(d => d.status === 'offline').length;
-  const totalDevices = devices.length;
+  // Calculate statistics (memoized)
+  const { onlineDevices, offlineDevices, totalDevices } = useMemo(() => {
+    let online = 0, offline = 0;
+    for (const d of devices) {
+      if (d.status === 'online') online++; else if (d.status === 'offline') offline++;
+    }
+    return { onlineDevices: online, offlineDevices: offline, totalDevices: devices.length };
+  }, [devices]);
 
   const getStatusColor = (status) => {
     switch (status.toLowerCase()) {
@@ -466,7 +487,7 @@ function DeviceGrid() {
                 }
               }}
             >
-              <TableCell>
+              <TableCell sx={{ width: 140 }}>
                 <Chip
                   icon={<CircleIcon sx={{ fontSize: 12 }} />}
                   label={device.status}
@@ -474,18 +495,18 @@ function DeviceGrid() {
                   size="small"
                 />
               </TableCell>
-              <TableCell>
+              <TableCell sx={{ width: '28%' }}>
                 <Box display="flex" alignItems="center">
                   <ComputerIcon sx={{ mr: 1, color: 'text.secondary' }} />
                   {device.name}
                 </Box>
               </TableCell>
-              <TableCell>{device.ip}</TableCell>
-              <TableCell>{getLastSeenText(device.last_ping)}</TableCell>
+              <TableCell sx={{ width: '20%' }}>{device.ip}</TableCell>
+              <TableCell sx={{ width: 140 }}>{getLastSeenText(device.last_ping)}</TableCell>
               <TableCell>
                 {device.current_media || <em>None</em>}
               </TableCell>
-              <TableCell align="right">
+              <TableCell align="right" sx={{ width: 180 }}>
                 <Tooltip title="Send Command">
                   <IconButton 
                     color="primary"
@@ -493,8 +514,34 @@ function DeviceGrid() {
                       setCmdDevice(device.id);
                       setCmdOpen(true);
                     }}
+                    size="small"
                   >
                     <SendIcon />
+                  </IconButton>
+                </Tooltip>
+                <Tooltip title="Edit Device">
+                  <IconButton
+                    onClick={() => {
+                      setEditDevice({ ...device });
+                      setEditOpen(true);
+                    }}
+                    size="small"
+                    sx={{ ml: 0.5 }}
+                  >
+                    <EditIcon />
+                  </IconButton>
+                </Tooltip>
+                <Tooltip title="Delete Device">
+                  <IconButton
+                    color="error"
+                    onClick={() => {
+                      setDeviceToDelete(device);
+                      setDeleteOpen(true);
+                    }}
+                    size="small"
+                    sx={{ ml: 0.5 }}
+                  >
+                    <DeleteIcon />
                   </IconButton>
                 </Tooltip>
               </TableCell>
@@ -586,8 +633,14 @@ function DeviceGrid() {
               fullWidth
               size="small"
               placeholder="Search devices by name or IP..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
+              value={searchInput}
+              onChange={(e) => {
+                const value = e.target.value;
+                setSearchInput(value);
+                startTransition(() => {
+                  setSearchTerm(value);
+                });
+              }}
               InputProps={{
                 startAdornment: (
                   <InputAdornment position="start">
@@ -628,7 +681,7 @@ function DeviceGrid() {
 
       {/* Main Content */}
       <Paper sx={{ p: 2 }}>
-        {loading ? (
+        {loading || isFetching ? (
           <Box display="flex" justifyContent="center" py={4}>
             <Typography color="text.secondary">Loading devices...</Typography>
           </Box>
@@ -650,12 +703,113 @@ function DeviceGrid() {
             {filteredDevices.map(renderDeviceCard)}
           </Grid>
         ) : (
-          renderDeviceTable()
+          // Virtualized table view using react-window
+          <TableContainer>
+            <Table size="small" sx={{ tableLayout: 'fixed' }}>
+              <TableHead>
+                <TableRow>
+                  <TableCell sx={{ width: 140 }}>Status</TableCell>
+                  <TableCell sx={{ width: '28%' }}>Name</TableCell>
+                  <TableCell sx={{ width: '20%' }}>IP Address</TableCell>
+                  <TableCell sx={{ width: 140 }}>Last Seen</TableCell>
+                  <TableCell>Current Media</TableCell>
+                  <TableCell align="right" sx={{ width: 180 }}>Actions</TableCell>
+                </TableRow>
+              </TableHead>
+            </Table>
+            <List
+              height={480}
+              itemCount={filteredDevices.length}
+              itemSize={56}
+              width={'100%'}
+              style={{ overflowX: 'hidden' }}
+            >
+              {({ index, style }) => {
+                const device = filteredDevices[index];
+                return (
+                  <div style={style} key={device.id}>
+                    <Table size="small" sx={{ tableLayout: 'fixed' }}>
+                      <TableBody>
+                        <TableRow 
+                          hover
+                          sx={{
+                            '& td': { 
+                              borderLeft: device.status === 'online' ? '4px solid' : 'none',
+                              borderLeftColor: 'success.main'
+                            }
+                          }}
+                        >
+                          <TableCell sx={{ width: 140 }}>
+                            <Chip
+                              icon={<CircleIcon sx={{ fontSize: 12 }} />}
+                              label={device.status}
+                              color={getStatusColor(device.status)}
+                              size="small"
+                            />
+                          </TableCell>
+                          <TableCell sx={{ width: '28%' }}>
+                            <Box display="flex" alignItems="center">
+                              <ComputerIcon sx={{ mr: 1, color: 'text.secondary' }} />
+                              {device.name}
+                            </Box>
+                          </TableCell>
+                          <TableCell sx={{ width: '20%' }}>{device.ip}</TableCell>
+                          <TableCell sx={{ width: 140 }}>{getLastSeenText(device.last_ping)}</TableCell>
+                          <TableCell>
+                            {device.current_media || <em>None</em>}
+                          </TableCell>
+                          <TableCell align="right" sx={{ width: 180 }}>
+                            <Tooltip title="Send Command">
+                              <IconButton 
+                                color="primary"
+                                onClick={() => {
+                                  setCmdDevice(device.id);
+                                  setCmdOpen(true);
+                                }}
+                                size="small"
+                              >
+                                <SendIcon />
+                              </IconButton>
+                            </Tooltip>
+                            <Tooltip title="Edit Device">
+                              <IconButton
+                                onClick={() => {
+                                  setEditDevice({ ...device });
+                                  setEditOpen(true);
+                                }}
+                                size="small"
+                                sx={{ ml: 0.5 }}
+                              >
+                                <EditIcon />
+                              </IconButton>
+                            </Tooltip>
+                            <Tooltip title="Delete Device">
+                              <IconButton
+                                color="error"
+                                onClick={() => {
+                                  setDeviceToDelete(device);
+                                  setDeleteOpen(true);
+                                }}
+                                size="small"
+                                sx={{ ml: 0.5 }}
+                              >
+                                <DeleteIcon />
+                              </IconButton>
+                            </Tooltip>
+                          </TableCell>
+                        </TableRow>
+                      </TableBody>
+                    </Table>
+                  </div>
+                );
+              }}
+            </List>
+          </TableContainer>
         )}
       </Paper>
 
       {/* Command Dialog */}
-      <Dialog open={cmdOpen} onClose={() => setCmdOpen(false)} maxWidth="sm" fullWidth>
+      <Dialog open={cmdOpen} keepMounted onClose={() => setCmdOpen(false)} maxWidth="sm" fullWidth>
         <DialogTitle>Send Command to Device</DialogTitle>
         <DialogContent>
           <TextField
@@ -694,7 +848,7 @@ function DeviceGrid() {
       </Dialog>
 
       {/* Device Registration Dialog */}
-      <Dialog open={registerOpen} onClose={() => setRegisterOpen(false)} maxWidth="sm" fullWidth>
+      <Dialog open={registerOpen} keepMounted onClose={() => setRegisterOpen(false)} maxWidth="sm" fullWidth>
         <DialogTitle>Register New Device</DialogTitle>
         <DialogContent>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
@@ -733,7 +887,7 @@ function DeviceGrid() {
       </Dialog>
 
       {/* Device Edit Dialog */}
-      <Dialog open={editOpen} onClose={() => setEditOpen(false)} maxWidth="sm" fullWidth>
+      <Dialog open={editOpen} keepMounted onClose={() => setEditOpen(false)} maxWidth="sm" fullWidth>
         <DialogTitle>Edit Device</DialogTitle>
         <DialogContent>
           <TextField
@@ -766,7 +920,7 @@ function DeviceGrid() {
       </Dialog>
 
       {/* Device Delete Confirmation Dialog */}
-      <Dialog open={deleteOpen} onClose={() => setDeleteOpen(false)} maxWidth="sm" fullWidth>
+      <Dialog open={deleteOpen} keepMounted onClose={() => setDeleteOpen(false)} maxWidth="sm" fullWidth>
         <DialogTitle>Delete Device</DialogTitle>
         <DialogContent>
           <Typography>
@@ -791,6 +945,7 @@ function DeviceGrid() {
       {/* Screenshot Dialog */}
       <Dialog 
         open={screenshotOpen} 
+        keepMounted
         onClose={() => setScreenshotOpen(false)} 
         maxWidth="md" 
         fullWidth
