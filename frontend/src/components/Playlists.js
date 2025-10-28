@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState, useDeferredValue } from 'react';
+import { FixedSizeList as VirtualList } from 'react-window';
 import {
   Paper,
   Typography,
@@ -383,39 +384,52 @@ function Playlists() {
             <TableCell align="right" sx={{ width: 120 }}>Actions</TableCell>
           </TableRow>
         </TableHead>
-        <TableBody>
-          {filteredPlaylists.map(playlist => {
-            const stats = getPlaylistStats(playlist);
-            return (
-              <TableRow key={playlist.id} hover>
-                <TableCell sx={{ width: '35%' }}>
-                  <Box display="flex" alignItems="center">
-                    <PlaylistPlayIcon sx={{ mr: 1, color: 'text.secondary' }} />
-                    {playlist.name}
-                  </Box>
-                </TableCell>
-                <TableCell sx={{ width: 100 }}>{stats.count}</TableCell>
-                <TableCell sx={{ width: 120 }}>{formatDuration(stats.duration)}</TableCell>
-                <TableCell sx={{ width: '20%' }}>
-                  {playlist.folder_id ? 
-                    folders.find(f => f.id === playlist.folder_id)?.name || 'Unknown' : 
-                    'None'
-                  }
-                </TableCell>
-                <TableCell sx={{ width: 140 }}>{new Date(playlist.updated_at).toLocaleDateString()}</TableCell>
-                <TableCell align="right" sx={{ width: 120 }}>
-                  <IconButton 
-                    size="small"
-                    onClick={(e) => handleMenuOpen(e, playlist)}
-                  >
-                    <MoreVertIcon />
-                  </IconButton>
-                </TableCell>
-              </TableRow>
-            );
-          })}
-        </TableBody>
       </Table>
+      <VirtualList
+        height={480}
+        itemCount={filteredPlaylists.length}
+        itemSize={56}
+        width={'100%'}
+        style={{ overflowX: 'hidden' }}
+      >
+        {({ index, style }) => {
+          const playlist = filteredPlaylists[index];
+          const stats = getPlaylistStats(playlist);
+          return (
+            <div style={style} key={playlist.id}>
+              <Table size="small" sx={{ tableLayout: 'fixed' }}>
+                <TableBody>
+                  <TableRow hover>
+                    <TableCell sx={{ width: '35%' }}>
+                      <Box display="flex" alignItems="center">
+                        <PlaylistPlayIcon sx={{ mr: 1, color: 'text.secondary' }} />
+                        {playlist.name}
+                      </Box>
+                    </TableCell>
+                    <TableCell sx={{ width: 100 }}>{stats.count}</TableCell>
+                    <TableCell sx={{ width: 120 }}>{formatDuration(stats.duration)}</TableCell>
+                    <TableCell sx={{ width: '20%' }}>
+                      {playlist.folder_id ? 
+                        folders.find(f => f.id === playlist.folder_id)?.name || 'Unknown' : 
+                        'None'
+                      }
+                    </TableCell>
+                    <TableCell sx={{ width: 140 }}>{new Date(playlist.updated_at).toLocaleDateString()}</TableCell>
+                    <TableCell align="right" sx={{ width: 120 }}>
+                      <IconButton 
+                        size="small"
+                        onClick={(e) => handleMenuOpen(e, playlist)}
+                      >
+                        <MoreVertIcon />
+                      </IconButton>
+                    </TableCell>
+                  </TableRow>
+                </TableBody>
+              </Table>
+            </div>
+          );
+        }}
+      </VirtualList>
     </TableContainer>
   );
 

@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { FixedSizeList as VirtualList } from 'react-window';
 import {
   Paper,
   Typography,
@@ -319,94 +320,107 @@ function Schedules() {
             <TableCell align="right">Actions</TableCell>
           </TableRow>
         </TableHead>
-        <TableBody>
-          {schedules.map(sch => {
-            const isCurrentActive = isCurrentlyActive(sch);
-            const device = devices.find(d => d.id === sch.device_id);
-            const playlist = playlists.find(p => p.id === sch.playlist_id);
-            
-            return (
-              <TableRow 
-                key={sch.id} 
-                hover
-                sx={{ 
-                  opacity: sch.is_enabled ? 1 : 0.5,
-                  '& td': { 
-                    borderLeft: isCurrentActive ? '4px solid' : 'none',
-                    borderLeftColor: 'success.main'
-                  }
-                }}
-              >
-                <TableCell>
-                  <Box display="flex" alignItems="center" gap={1}>
-                    <Chip
-                      icon={isCurrentActive ? <PlayIcon /> : <PauseIcon />}
-                      label={sch.is_enabled ? 'Active' : 'Disabled'}
-                      color={sch.is_enabled ? 'success' : 'default'}
-                      size="small"
-                    />
-                    {isCurrentActive && <Badge color="success" variant="dot" />}
-                  </Box>
-                </TableCell>
-                <TableCell>{sch.name || <em>Unnamed</em>}</TableCell>
-                <TableCell>
-                  <Box display="flex" alignItems="center">
-                    <DeviceIcon sx={{ mr: 1, fontSize: 16, color: 'text.secondary' }} />
-                    {device?.name || `ID: ${sch.device_id}`}
-                  </Box>
-                </TableCell>
-                <TableCell>
-                  <Box display="flex" alignItems="center">
-                    <PlaylistIcon sx={{ mr: 1, fontSize: 16, color: 'text.secondary' }} />
-                    {playlist?.name || `ID: ${sch.playlist_id}`}
-                  </Box>
-                </TableCell>
-                <TableCell>
-                  <Typography variant="body2">
-                    {`${toLocalTime(sch.time_slot_start)} - ${toLocalTime(sch.time_slot_end)}`}
-                  </Typography>
-                  <Typography variant="caption" color="text.secondary">
-                    ({Intl.DateTimeFormat().resolvedOptions().timeZone})
-                  </Typography>
-                </TableCell>
-                <TableCell>
-                  <Box display="flex" flexWrap="wrap" gap={0.5}>
-                    {sch.days_of_week.map(day => (
-                      <Chip
-                        key={day}
-                        label={day.slice(0, 3)}
-                        size="small"
-                        variant="outlined"
-                      />
-                    ))}
-                  </Box>
-                </TableCell>
-                <TableCell>
-                  {sch.valid_from || sch.valid_until ? (
-                    <Typography variant="body2">
-                      {sch.valid_from ? new Date(sch.valid_from).toLocaleDateString() : 'Any'} 
-                      {' → '}
-                      {sch.valid_until ? new Date(sch.valid_until).toLocaleDateString() : 'Any'}
-                    </Typography>
-                  ) : (
-                    <Typography variant="body2" color="text.secondary">Always</Typography>
-                  )}
-                </TableCell>
-                <TableCell align="right">
-                  <Tooltip title="More Options">
-                    <IconButton 
-                      size="small"
-                      onClick={(e) => handleMenuOpen(e, sch)}
-                    >
-                      <MoreVertIcon />
-                    </IconButton>
-                  </Tooltip>
-                </TableCell>
-              </TableRow>
-            );
-          })}
-        </TableBody>
       </Table>
+      <VirtualList
+        height={480}
+        itemSize={56}
+        itemCount={schedules.length}
+        width={'100%'}
+        style={{ overflowX: 'hidden' }}
+      >
+        {({ index, style }) => {
+          const sch = schedules[index];
+          const isCurrentActive = isCurrentlyActive(sch);
+          const device = devices.find(d => d.id === sch.device_id);
+          const playlist = playlists.find(p => p.id === sch.playlist_id);
+          
+          return (
+            <div style={style}>
+              <Table>
+                <TableBody>
+                  <TableRow 
+                    key={sch.id} 
+                    hover
+                    sx={{ 
+                      opacity: sch.is_enabled ? 1 : 0.5,
+                      '& td': { 
+                        borderLeft: isCurrentActive ? '4px solid' : 'none',
+                        borderLeftColor: 'success.main'
+                      }
+                    }}
+                  >
+                    <TableCell>
+                      <Box display="flex" alignItems="center" gap={1}>
+                        <Chip
+                          icon={isCurrentActive ? <PlayIcon /> : <PauseIcon />}
+                          label={sch.is_enabled ? 'Active' : 'Disabled'}
+                          color={sch.is_enabled ? 'success' : 'default'}
+                          size="small"
+                        />
+                        {isCurrentActive && <Badge color="success" variant="dot" />}
+                      </Box>
+                    </TableCell>
+                    <TableCell>{sch.name || <em>Unnamed</em>}</TableCell>
+                    <TableCell>
+                      <Box display="flex" alignItems="center">
+                        <DeviceIcon sx={{ mr: 1, fontSize: 16, color: 'text.secondary' }} />
+                        {device?.name || `ID: ${sch.device_id}`}
+                      </Box>
+                    </TableCell>
+                    <TableCell>
+                      <Box display="flex" alignItems="center">
+                        <PlaylistIcon sx={{ mr: 1, fontSize: 16, color: 'text.secondary' }} />
+                        {playlist?.name || `ID: ${sch.playlist_id}`}
+                      </Box>
+                    </TableCell>
+                    <TableCell>
+                      <Typography variant="body2">
+                        {`${toLocalTime(sch.time_slot_start)} - ${toLocalTime(sch.time_slot_end)}`}
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        ({Intl.DateTimeFormat().resolvedOptions().timeZone})
+                      </Typography>
+                    </TableCell>
+                    <TableCell>
+                      <Box display="flex" flexWrap="wrap" gap={0.5}>
+                        {sch.days_of_week.map(day => (
+                          <Chip
+                            key={day}
+                            label={day.slice(0, 3)}
+                            size="small"
+                            variant="outlined"
+                          />
+                        ))}
+                      </Box>
+                    </TableCell>
+                    <TableCell>
+                      {sch.valid_from || sch.valid_until ? (
+                        <Typography variant="body2">
+                          {sch.valid_from ? new Date(sch.valid_from).toLocaleDateString() : 'Any'} 
+                          {' → '}
+                          {sch.valid_until ? new Date(sch.valid_until).toLocaleDateString() : 'Any'}
+                        </Typography>
+                      ) : (
+                        <Typography variant="body2" color="text.secondary">Always</Typography>
+                      )}
+                    </TableCell>
+                    <TableCell align="right">
+                      <Tooltip title="More Options">
+                        <IconButton 
+                          size="small"
+                          onClick={(e) => handleMenuOpen(e, sch)}
+                        >
+                          <MoreVertIcon />
+                        </IconButton>
+                      </Tooltip>
+                    </TableCell>
+                  </TableRow>
+                </TableBody>
+              </Table>
+            </div>
+          );
+        }}
+      </VirtualList>
     </TableContainer>
   );
 

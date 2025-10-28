@@ -100,8 +100,9 @@ router.post('/', async (req, res) => {
         is_enabled
       ]
     );
-    // Invalidate schedules cache
+    // Invalidate schedules cache AND device-specific heartbeat cache
     await invalidateCache(CACHE_KEYS.SCHEDULES + '*');
+    await invalidateCache(`device:${device_id}:schedule_cache`);
     res.status(201).json(result.rows[0]);
   } catch (error) {
     console.error('Error creating schedule:', error);
@@ -211,8 +212,9 @@ router.patch('/:id', async (req, res) => {
         id
       ]
     );
-    // Invalidate schedules cache
+    // Invalidate schedules cache AND device-specific heartbeat cache
     await invalidateCache(CACHE_KEYS.SCHEDULES + '*');
+    await invalidateCache(`device:${finalSchedule.deviceId}:schedule_cache`);
     res.json(result.rows[0]);
   } catch (error) {
     console.error('Error updating schedule:', error);
@@ -224,12 +226,13 @@ router.patch('/:id', async (req, res) => {
 router.delete('/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const result = await pool.query('DELETE FROM schedules WHERE id = $1 RETURNING id', [id]);
+    const result = await pool.query('DELETE FROM schedules WHERE id = $1 RETURNING id, device_id', [id]);
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Schedule not found' });
     }
-    // Invalidate schedules cache
+    // Invalidate schedules cache AND device-specific heartbeat cache
     await invalidateCache(CACHE_KEYS.SCHEDULES + '*');
+    await invalidateCache(`device:${result.rows[0].device_id}:schedule_cache`);
     res.json({ success: true, deleted_id: parseInt(id, 10) });
   } catch (error) {
     console.error('Error deleting schedule:', error);

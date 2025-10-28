@@ -713,7 +713,7 @@ function DeviceGrid() {
                   <TableCell sx={{ width: '20%' }}>IP Address</TableCell>
                   <TableCell sx={{ width: 140 }}>Last Seen</TableCell>
                   <TableCell>Current Media</TableCell>
-                  <TableCell align="right" sx={{ width: 180 }}>Actions</TableCell>
+                  <TableCell align="right" sx={{ width: 220 }}>Actions</TableCell>
                 </TableRow>
               </TableHead>
             </Table>
@@ -758,7 +758,19 @@ function DeviceGrid() {
                           <TableCell>
                             {device.current_media || <em>None</em>}
                           </TableCell>
-                          <TableCell align="right" sx={{ width: 180 }}>
+                          <TableCell align="right" sx={{ width: 220 }}>
+                            <Tooltip title="Screenshot">
+                              <span>
+                                <IconButton 
+                                  color="primary"
+                                  onClick={() => handleTakeScreenshot(device)}
+                                  disabled={device.status !== 'online'}
+                                  size="small"
+                                >
+                                  <CameraIcon />
+                                </IconButton>
+                              </span>
+                            </Tooltip>
                             <Tooltip title="Send Command">
                               <IconButton 
                                 color="primary"
@@ -767,6 +779,7 @@ function DeviceGrid() {
                                   setCmdOpen(true);
                                 }}
                                 size="small"
+                                sx={{ ml: 0.5 }}
                               >
                                 <SendIcon />
                               </IconButton>

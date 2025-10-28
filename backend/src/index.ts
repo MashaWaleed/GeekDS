@@ -1,4 +1,5 @@
 import express from 'express';
+import compression from 'compression';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import devicesRouter from './devices';
@@ -16,6 +17,19 @@ const app = express();
 
 // Enable CORS for all origins
 app.use(cors());
+
+// Enable gzip compression for API responses
+app.use(compression({
+  filter: (req, res) => {
+    // Don't compress media files (already compressed)
+    if (req.path.startsWith('/api/media/') || req.path.startsWith('/media/')) {
+      return false;
+    }
+    return compression.filter(req, res);
+  },
+  threshold: 1024, // Only compress responses > 1KB
+  level: 6 // Balance between speed and compression (1-9)
+}));
 
 app.use(express.json());
 

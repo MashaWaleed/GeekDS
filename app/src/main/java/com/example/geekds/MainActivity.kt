@@ -90,62 +90,90 @@ class MainActivity : Activity() {
     private var registrationPollingRunnable: Runnable? = null // Polling task reference
     private var connectionFailureCount = 0
     private var isNetworkAvailable = false
+    // Unified heartbeat versions & control
+    // Use Long for version counters to avoid 32-bit overflow (epoch ms exceeds Int range)
+    private var lastKnownScheduleVersion: Long = 0
+    private var lastKnownPlaylistVersion: Long = 0
+    private var heartbeatsPaused = false
+    private var healthProbeJob: Job? = null
 
     // Add timing for log throttling
     private var lastScheduleLogTime = 0L
     private var lastPlaylistLogTime = 0L
 
+    // Track last fetched ALL schedules version to avoid redundant fetches
+    private var lastAllSchedulesVersion: Long = 0
+
 
     // State machine
     private enum class State { REGISTERING, IDLE, SYNCING, ERROR }
 
-// Preferred: check by durable UUID with IP fallback for compatibility
-private fun checkRegistrationByUuidOrIp(uuid: String, ip: String, pollingRunnable: Runnable) {
-    registrationCheckAttempts++
+    // UUID-ONLY registration check (no IP fallback - IP is unreliable)
+    private fun checkRegistrationByUuid(uuid: String, pollingRunnable: Runnable) {
+        registrationCheckAttempts++
 
-    val uuidReq = Request.Builder()
-        .url("$cmsUrl/api/devices/check-registration/by-uuid/$uuid")
-        .get()
-        .build()
+        val uuidReq = Request.Builder()
+            .url("$cmsUrl/api/devices/check-registration/by-uuid/$uuid")
+            .get()
+            .build()
 
-    client.newCall(uuidReq).enqueue(object : Callback {
-        override fun onFailure(call: Call, e: IOException) {
-            // Fallback to IP check
-            checkRegistrationStatus(ip, pollingRunnable)
-        }
-
-        override fun onResponse(call: Call, response: Response) {
-            val body = response.body?.string()
-            if (response.isSuccessful && body != null) {
-                try {
-                    val json = JSONObject(body)
-                    val registered = json.getBoolean("registered")
-                    if (registered) {
-                        val deviceJson = json.getJSONObject("device")
-                        val newId = deviceJson.getInt("id")
-                        val newName = deviceJson.getString("name")
-                        runOnUiThread {
-                            stopRegistrationPolling()
-                            // Close registration dialog on success
-                            currentRegistrationDialog?.dismiss()
-                            saveDeviceId(newId)
-                            saveDeviceName(newName)
-                            deviceId = newId
-                            deviceName = newName
-                            setState(State.IDLE, "Device registered (via UUID)")
-                            startBackgroundTasks()
-                        }
-                        return
-                    }
-                } catch (_: Exception) {
-                    // ignore and fallback
+        client.newCall(uuidReq).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                // Network error - retry with exponential backoff
+                if (state == State.REGISTERING) {
+                    val delay = calculateRegistrationDelay()
+                    Log.d("GeekDS", "[REGISTERING] UUID check failed (network error), retrying in ${delay}ms: ${e.message}")
+                    handler.postDelayed(pollingRunnable, delay)
                 }
             }
-            // Not registered yet by UUID; fallback to IP (will handle its own retry loop)
-            checkRegistrationStatus(ip, pollingRunnable)
-        }
-    })
-}
+
+            override fun onResponse(call: Call, response: Response) {
+                val body = response.body?.string()
+                if (response.isSuccessful && body != null) {
+                    try {
+                        val json = JSONObject(body)
+                        val registered = json.getBoolean("registered")
+                        if (registered) {
+                            val deviceJson = json.getJSONObject("device")
+                            val newId = deviceJson.getInt("id")
+                            val newName = deviceJson.getString("name")
+                            runOnUiThread {
+                                stopRegistrationPolling()
+                                currentRegistrationDialog?.dismiss()
+                                saveDeviceId(newId)
+                                saveDeviceName(newName)
+                                deviceId = newId
+                                deviceName = newName
+                                setState(State.IDLE, "Device registered (UUID: ${uuid.take(8)}...)")
+                                startBackgroundTasks()
+                            }
+                            return
+                        } else {
+                            // Not registered yet - keep polling
+                            if (state == State.REGISTERING) {
+                                val delay = calculateRegistrationDelay()
+                                Log.d("GeekDS", "[REGISTERING] Not registered yet (UUID: ${uuid.take(8)}...), retry in ${delay}ms")
+                                handler.postDelayed(pollingRunnable, delay)
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.e("GeekDS", "[REGISTERING] Error parsing UUID check response: ${e.message}")
+                        if (state == State.REGISTERING) {
+                            val delay = calculateRegistrationDelay()
+                            handler.postDelayed(pollingRunnable, delay)
+                        }
+                    }
+                } else {
+                    // Server error or bad response
+                    if (state == State.REGISTERING) {
+                        val delay = calculateRegistrationDelay()
+                        Log.d("GeekDS", "[REGISTERING] Server error (HTTP ${response.code}), retry in ${delay}ms")
+                        handler.postDelayed(pollingRunnable, delay)
+                    }
+                }
+            }
+        })
+    }
 
     private var state: State = State.REGISTERING
 
@@ -238,12 +266,13 @@ private fun checkRegistrationByUuidOrIp(uuid: String, ip: String, pollingRunnabl
             Log.i("GeekDS", "Loaded saved device name: '$deviceName'")
         }
 
-        // Load or generate durable UUID
+        // Load or generate durable hardware-based UUID
         deviceUuid = loadDeviceUuid()
         if (deviceUuid == null) {
-            deviceUuid = java.util.UUID.randomUUID().toString()
+            // Generate UUID based on Android ID (hardware-tied, survives app reinstalls)
+            deviceUuid = generateHardwareBasedUuid()
             saveDeviceUuid(deviceUuid!!)
-            android.util.Log.i("GeekDS", "Generated new device UUID: ${deviceUuid}")
+            android.util.Log.i("GeekDS", "Generated new hardware-based UUID: ${deviceUuid}")
         } else {
             android.util.Log.i("GeekDS", "Loaded device UUID: ${deviceUuid}")
         }
@@ -394,8 +423,8 @@ private fun checkRegistrationByUuidOrIp(uuid: String, ip: String, pollingRunnabl
     // Replace your current handleConnectionError method with this:
     private fun handleConnectionError(operation: String, error: Throwable) {
         connectionFailureCount++
-    // Cap to prevent unbounded growth during very long offline periods
-    if (connectionFailureCount > 100) connectionFailureCount = 100
+        // Cap to prevent unbounded growth during very long offline periods
+        if (connectionFailureCount > 100) connectionFailureCount = 100
         val timeSinceLastSuccess = System.currentTimeMillis() - lastSuccessfulConnection
 
         Log.e("GeekDS", "Connection error in $operation (failure #$connectionFailureCount): $error")
@@ -411,27 +440,42 @@ private fun checkRegistrationByUuidOrIp(uuid: String, ip: String, pollingRunnabl
             attemptConnectionRecovery()
         }
 
-        // Simple backoff - cap at 2 minutes
-        val backoffTime = minOf(30_000L * connectionFailureCount, 120_000L)
-        Log.i("GeekDS", "Will retry in ${backoffTime / 1000}s")
-
-        // IMPORTANT: Avoid stacking retries for heartbeat because a dedicated loop already triggers it every 30s.
-        // Stacked handler retries caused long-term offline crashes due to many queued Runnables.
-        if (operation == "heartbeat") {
-            Log.i("GeekDS", "Skipping explicit handler retry for heartbeat; main loop will attempt again.")
+        // CIRCUIT BREAKER: Pause heartbeats after 12 consecutive failures
+        if (operation == "heartbeat" && connectionFailureCount >= 12) {
+            Log.w("GeekDS", "Circuit breaker triggered: 12 consecutive heartbeat failures")
+            pauseHeartbeats()
             return
         }
+    }
 
-        handler.postDelayed({
-            if (isNetworkConnected()) {
-                Log.i("GeekDS", "Retrying $operation after backoff")
-                when (operation) {
-                    "registration" -> showRegistrationScreen()
-                    "heartbeat" -> sendHeartbeat() // (Normally skipped above, retained for completeness)
-                    "sync" -> syncScheduleAndMedia()
-                }
+    private fun pauseHeartbeats() {
+        if (heartbeatsPaused) return
+        heartbeatsPaused = true
+        Log.w("GeekDS", "Heartbeats paused after failures. Starting periodic health probe.")
+        healthProbeJob?.cancel()
+        healthProbeJob = scope.launch(Dispatchers.IO) {
+            var done = false
+            while (isActive && heartbeatsPaused && !done) {
+                var delayMs = 300_000L  // 5 minutes when server is offline
+                try {
+                    if (!isNetworkConnected()) {
+                        delayMs = 30_000L  // 30 seconds when network is down (will recover faster when network returns)
+                    } else {
+                        val req = Request.Builder().url("$cmsUrl/api/health").get().build()
+                        client.newCall(req).execute().use { resp ->
+                            if (resp.isSuccessful) {
+                                Log.i("GeekDS", "Health probe success – resuming heartbeats")
+                                heartbeatsPaused = false
+                                lastSuccessfulConnection = System.currentTimeMillis()
+                                connectionFailureCount = 0
+                                done = true
+                            }
+                        }
+                    }
+                } catch (_: Exception) { }
+                if (!done) delay(delayMs)
             }
-        }, backoffTime)
+        }
     }
 
     private fun attemptConnectionRecovery() {
@@ -458,8 +502,8 @@ private fun checkRegistrationByUuidOrIp(uuid: String, ip: String, pollingRunnabl
                     if (deviceId == null) {
                         showRegistrationScreen()
                     } else {
-                        // Try a simple heartbeat first
-                        sendHeartbeat()
+                        // Try a unified heartbeat first
+                        sendUnifiedHeartbeat()
                     }
                 } else {
                     Log.w("GeekDS", "Network still not available after recovery attempt")
@@ -514,6 +558,37 @@ private fun checkRegistrationByUuidOrIp(uuid: String, ip: String, pollingRunnabl
     private fun loadDeviceUuid(): String? {
         return getSharedPreferences("geekds_prefs", MODE_PRIVATE)
             .getString("device_uuid", null)
+    }
+
+    /**
+     * Generate a durable UUID based on Android hardware ID
+     * This UUID will:
+     * - Be unique per device + app signing certificate combination
+     * - Survive app reinstalls (same signing key)
+     * - Be consistent across device lifetime (until factory reset)
+     * - Not require any special permissions
+     */
+    private fun generateHardwareBasedUuid(): String {
+        // Get Android ID (unique per device + app signature)
+        val androidId = android.provider.Settings.Secure.getString(
+            contentResolver,
+            android.provider.Settings.Secure.ANDROID_ID
+        ) ?: "fallback-${System.currentTimeMillis()}"
+
+        // Create deterministic UUID from Android ID using UUID v5 (name-based)
+        // This ensures same Android ID always generates same UUID
+        val namespace = java.util.UUID.fromString("6ba7b810-9dad-11d1-80b4-00c04fd430c8") // DNS namespace
+        val bytes = (namespace.toString() + androidId).toByteArray()
+        val hash = java.security.MessageDigest.getInstance("SHA-1").digest(bytes)
+
+        // Convert hash to UUID format
+        hash[6] = ((hash[6].toInt() and 0x0f) or 0x50).toByte() // Version 5
+        hash[8] = ((hash[8].toInt() and 0x3f) or 0x80).toByte() // Variant
+
+        val uuid = java.util.UUID.nameUUIDFromBytes(hash)
+
+        Log.i("GeekDS", "Hardware-based UUID generated from Android ID: ${androidId.take(8)}...")
+        return uuid.toString()
     }
 
     // Claim or (re)create device on the server using durable UUID
@@ -574,224 +649,416 @@ private fun checkRegistrationByUuidOrIp(uuid: String, ip: String, pollingRunnabl
 
     // Updated startBackgroundTasks to add debug info
     private fun startBackgroundTasks() {
-        // Cancel any existing jobs
         scope.coroutineContext.cancelChildren()
         scheduleEnforcerJob?.cancel()
+        Log.i("GeekDS", "Starting unified 20s heartbeat loop (pause-on-failure mode)")
 
-        Log.i("GeekDS", "Starting efficient background tasks")
-
-        // Add initial debug info
-        handler.postDelayed({
-            debugScheduleInfo()
-        }, 3000)
-
-        // Heartbeat every 30 seconds with network checking (faster)
+        // Heartbeat loop every 20s when not paused
         scope.launch {
             while (isActive) {
                 try {
-                    if (isNetworkConnected()) {
-                        sendHeartbeat()
+                    if (!heartbeatsPaused && isNetworkConnected()) {
+                        sendUnifiedHeartbeat()
+                    } else if (heartbeatsPaused) {
+                        Log.d("GeekDS", "Heartbeat paused – waiting for health probe")
                     } else {
-                        Log.w("GeekDS", "Skipping heartbeat - no network")
+                        Log.d("GeekDS", "No network – heartbeat skipped")
                     }
                 } catch (e: Exception) {
-                    Log.e("GeekDS", "Error in heartbeat loop", e)
+                    Log.e("GeekDS", "Unified heartbeat loop error", e)
                 }
-                delay(30 * 1000L)
+                delay(10_000L)
             }
         }
 
-        // Schedule/playlist sync every 20 seconds with network checking (faster)
-        scope.launch {
-            while (isActive) {
-                try {
-                    if (isNetworkConnected()) {
-                        syncScheduleAndMedia()
-                    } else {
-                        Log.w("GeekDS", "Skipping sync - no network")
-                    }
-                } catch (e: Exception) {
-                    Log.e("GeekDS", "Error in sync loop", e)
-                }
-                delay(20 * 1000L)
-            }
-        }
-
-        // Command polling every 20 seconds with network checking (aligned with sync)
-        scope.launch {
-            while (isActive) {
-                try {
-                    if (isNetworkConnected()) {
-                        pollCommands()
-                    }
-                } catch (e: Exception) {
-                    Log.e("GeekDS", "Error in command polling", e)
-                }
-                delay(20 * 1000L)
-            }
-        }
-
-        // Schedule enforcement: check every 5 seconds (no network needed)
-        // Wait a bit before starting to allow initial sync to complete
+        // Local schedule enforcement loop (no network dependency)
         scheduleEnforcerJob = scope.launch {
-            delay(10000L) // Wait 10 seconds for initial sync
+            delay(5_000L)
             while (isActive) {
-                try {
-                    enforceSchedule()
-                } catch (e: Exception) {
-                    Log.e("GeekDS", "Error in schedule enforcement", e)
-                }
-                delay(3000L) // Check every 3 seconds for faster response
+                try { enforceSchedule() } catch (e: Exception) { Log.e("GeekDS", "Error in schedule enforcement", e) }
+                delay(3_000L)
             }
         }
 
-        // Wake lock renewal every 5 minutes
+        // Wake lock maintenance
         scope.launch {
             while (isActive) {
+                delay(5 * 60 * 1000L)
+                if (wakeLock?.isHeld != true) {
+                    Log.w("GeekDS", "Wake lock lost, re-acquiring")
+                    setupWakeLock()
+                }
+            }
+        }
+    }
+    // Unified merged heartbeat hitting /heartbeat endpoint
+    private fun sendUnifiedHeartbeat() {
+        val id = deviceId ?: return
+        val ip = getLocalIpAddress() ?: "unknown"
+        val bodyObj = JSONObject().apply {
+            put("playback_state", if (isPlaylistActive) "playing" else "standby")
+            put("versions", JSONObject().apply {
+                put("schedule", lastKnownScheduleVersion)
+                put("playlist", lastKnownPlaylistVersion)
+                put("all_schedules", lastAllSchedulesVersion)
+            })
+            put("name", deviceName)
+            put("ip", ip)
+            put("uuid", deviceUuid ?: "")
+        }
+        val req = Request.Builder()
+            .url("$cmsUrl/api/devices/$id/heartbeat")
+            .patch(bodyObj.toString().toRequestBody("application/json".toMediaType()))
+            .build()
+
+        client.newCall(req).enqueue(object: Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                Log.e("GeekDS", "Unified heartbeat failure: ${e.message}")
+                handleConnectionError("heartbeat", e)
+            }
+            override fun onResponse(call: Call, response: Response) {
+                if (!response.isSuccessful) {
+                    if (response.code == 404) {
+                        Log.w("GeekDS", "Heartbeat 404 – device deleted server-side, clearing registration")
+                        clearDeviceRegistration()
+                        runOnUiThread { showRegistrationScreen() }
+                        return
+                    }
+                    handleConnectionError("heartbeat", Exception("HTTP ${response.code}"))
+                    return
+                }
                 try {
-                    delay(5 * 60 * 1000L)
-                    if (wakeLock?.isHeld != true) {
-                        Log.w("GeekDS", "Wake lock lost, re-acquiring")
-                        setupWakeLock()
+                    val txt = response.body?.string()
+                    val json = JSONObject(txt ?: "{}")
+                    val newVersions = json.optJSONObject("new_versions")
+                    if (newVersions != null) {
+                        lastKnownScheduleVersion = newVersions.optLong("schedule", lastKnownScheduleVersion)
+                        lastKnownPlaylistVersion = newVersions.optLong("playlist", lastKnownPlaylistVersion)
+
+                        // Track all_schedules version for detecting edits to inactive schedules
+                        val serverAllSchedulesVersion = newVersions.optLong("all_schedules", 0L)
+                        if (serverAllSchedulesVersion > 0 && serverAllSchedulesVersion != lastAllSchedulesVersion) {
+                            Log.i("GeekDS", "All schedules version changed: $lastAllSchedulesVersion -> $serverAllSchedulesVersion")
+                            // DON'T update lastAllSchedulesVersion here!
+                            // It will be updated in fetchDeviceSchedule() AFTER successful cache
+                        }
+                    }
+                    val scheduleChanged = json.optBoolean("schedule_changed", false)
+                    val playlistChanged = json.optBoolean("playlist_changed", false)
+                    val activePlaylistId = json.optInt("active_playlist_id", -1)
+
+                    // Update device name if server sends it back
+                    val serverDeviceName = json.optString("name", null)
+                    if (serverDeviceName != null && serverDeviceName.isNotEmpty() && serverDeviceName != deviceName) {
+                        Log.i("GeekDS", "Device name updated from server: '$deviceName' -> '$serverDeviceName'")
+                        deviceName = serverDeviceName
+                        saveDeviceName(serverDeviceName)
+                    }
+
+                    if (activePlaylistId > 0) {
+                        // Active schedule exists
+                        currentPlaylistId = activePlaylistId
+                    } else {
+                        // No active schedule now; if we previously had one, clear playback
+                        if (lastKnownScheduleVersion > 0 && isPlaylistActive) {
+                            Log.i("GeekDS", "Active schedule cleared on server – stopping playback")
+                            runOnUiThread { stopCurrentPlayback() }
+                        }
+                        currentPlaylistId = null
+                    }
+                    lastSuccessfulConnection = System.currentTimeMillis()
+                    connectionFailureCount = 0
+                    if (heartbeatsPaused) {
+                        heartbeatsPaused = false
+                        healthProbeJob?.cancel()
+                        Log.i("GeekDS", "Resumed heartbeats after successful unified heartbeat")
+                    }
+                    Log.d("GeekDS", "[IDLE] Unified heartbeat OK")
+
+                    // Check for screenshot commands
+                    val commands = json.optJSONArray("commands")
+                    if (commands != null && commands.length() > 0) {
+                        for (i in 0 until commands.length()) {
+                            val cmd = commands.getJSONObject(i)
+                            val type = cmd.optString("type")
+                            if (type == "screenshot_request") {
+                                Log.i("GeekDS", "Screenshot command received from heartbeat")
+                                scope.launch(Dispatchers.Main) {
+                                    delay(1000) // Give UI time to settle
+                                    takeScreenshot()
+                                }
+                            }
+                        }
+                    }
+
+                    // Detect implicit schedule clear (server returns version 0) even if schedule_changed false
+                    val implicitScheduleCleared = (lastKnownScheduleVersion == 0L && scheduleChanged.not() && currentPlaylistId == null)
+                    if (scheduleChanged || implicitScheduleCleared) {
+                        // Only fetch schedule if server thinks something changed OR we saw a clear
+                        fetchDeviceSchedule()
+                    } else if (playlistChanged && currentPlaylistId != null) {
+                        fetchPlaylist(currentPlaylistId!!)
                     }
                 } catch (e: Exception) {
-                    Log.e("GeekDS", "Error in wake lock management", e)
+                    Log.e("GeekDS", "Error parsing unified heartbeat response", e)
                 }
             }
-        }
+        })
     }
 
-    private val mainLoop = object : Runnable {
-        override fun run() {
-            when (state) {
-                State.IDLE -> {
-                    // No-op for IDLE, handled by coroutines
-                }
-
-                State.ERROR -> {
-                    // Try to recover every 2 minutes
-                    handler.postDelayed(this, 120_000)
-                }
-
-                else -> {
-                    // No-op for REGISTERING or SYNCING
-                }
-            }
-        }
-    }
-
-    private fun retryLater(action: () -> Unit) {
-        handler.postDelayed({ action() }, 30_000)
-    }
-
-    // ENHANCED: Updated sendHeartbeat method to include device name and IP
-    private fun sendHeartbeat() {
+    private fun fetchDeviceSchedule() {
         val id = deviceId ?: return
 
-        if (!isNetworkConnected()) {
-            Log.w("GeekDS", "Cannot send heartbeat - no network connection")
-            return
-        }
+        // FIRST: Fetch ALL schedules for offline caching
+        val allSchedulesReq = Request.Builder()
+            .url("$cmsUrl/api/devices/$id/schedules/all")
+            .get()
+            .build()
 
-        val json = JSONObject()
-        json.put("status", "online")
-        json.put("current_media", if (isPlaylistActive) "playing" else "standby")
+        client.newCall(allSchedulesReq).enqueue(object: Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                Log.w("GeekDS", "Failed to fetch all schedules: ${e.message}")
+                // Try to use cached schedules in offline mode
+                val cachedSchedules = loadAllSchedules(this@MainActivity)
+                if (cachedSchedules != null && cachedSchedules.isNotEmpty()) {
+                    Log.i("GeekDS", "Using ${cachedSchedules.size} cached schedules (OFFLINE MODE)")
+                    enforceScheduleWithMultiple(cachedSchedules)
+                }
+            }
 
-        // NEW: Include device name and IP in heartbeat
-        json.put("name", deviceName)
-        val currentIp = getLocalIpAddress() ?: "unknown"
-        json.put("ip", currentIp)
+            override fun onResponse(call: Call, response: Response) {
+                if (!response.isSuccessful) {
+                    Log.w("GeekDS", "All schedules fetch HTTP ${response.code}")
+                    return
+                }
 
-        json.put("uuid", deviceUuid ?: "")
-        json.put("system_info", JSONObject().apply {
-            put("cpu", 10)
-            put("memory", 30)
-            put("disk", "2GB")
-            put("network_failures", connectionFailureCount)
-            put("last_success", lastSuccessfulConnection)
-            put("device_name", deviceName) // Also include in system_info for redundancy
-            put("current_ip", currentIp)
+                try {
+                    val txt = response.body?.string()
+                    val json = JSONObject(txt ?: "{}")
+
+                    // CHECK VERSION FIRST - only process if version changed
+                    val serverVersion = json.optLong("version", 0L)
+                    if (serverVersion > 0 && serverVersion == lastAllSchedulesVersion) {
+                        Log.d("GeekDS", "All schedules version unchanged ($serverVersion), skipping fetch")
+                        // Still trigger enforcement with cached data
+                        val cachedSchedules = loadAllSchedules(this@MainActivity)
+                        if (cachedSchedules != null && cachedSchedules.isNotEmpty()) {
+                            enforceScheduleWithMultiple(cachedSchedules)
+                        }
+                        return
+                    }
+
+                    val schedulesArray = json.getJSONArray("schedules")
+                    val schedules = mutableListOf<Schedule>()
+
+                    for (i in 0 until schedulesArray.length()) {
+                        val sched = schedulesArray.getJSONObject(i)
+                        schedules.add(Schedule(
+                            playlistId = sched.getInt("playlist_id"),
+                            name = sched.optString("name", null),
+                            daysOfWeek = sched.getJSONArray("days_of_week").let { a ->
+                                (0 until a.length()).map { a.getString(it) }
+                            },
+                            timeSlotStart = sched.getString("time_slot_start"),
+                            timeSlotEnd = sched.getString("time_slot_end"),
+                            validFrom = sched.optString("valid_from", null),
+                            validUntil = sched.optString("valid_until", null),
+                            isEnabled = sched.getBoolean("is_enabled")
+                        ))
+                    }
+
+                    if (schedules.isNotEmpty()) {
+                        // Update version tracking BEFORE caching
+                        lastAllSchedulesVersion = serverVersion
+
+                        // Cache ALL schedules for offline operation
+                        saveAllSchedules(this@MainActivity, schedules)
+                        Log.i("GeekDS", "Cached ${schedules.size} schedules (version $serverVersion) for offline switching")
+
+                        // Pre-download all playlists for offline use
+                        schedules.forEach { schedule ->
+                            fetchAndCachePlaylist(schedule.playlistId)
+                        }
+
+                        // Apply current schedule immediately
+                        enforceScheduleWithMultiple(schedules)
+                    } else {
+                        Log.i("GeekDS", "No schedules assigned to this device")
+                        clearLocalData()
+                        runOnUiThread { stopCurrentPlayback() }
+                    }
+
+                } catch (e: Exception) {
+                    Log.e("GeekDS", "Error parsing all schedules", e)
+                }
+            }
         })
 
-        val body = RequestBody.create(
-            "application/json".toMediaTypeOrNull(), json.toString()
-        )
+        // SECOND: Also fetch the currently active schedule for immediate playback
+        val req = Request.Builder().url("$cmsUrl/api/devices/$id/schedule").get().build()
+        client.newCall(req).enqueue(object: Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                Log.e("GeekDS", "fetchDeviceSchedule failed: ${e.message}")
+            }
+            override fun onResponse(call: Call, response: Response) {
+                if (!response.isSuccessful) return
+                try {
+                    val txt = response.body?.string()
+                    val json = JSONObject(txt ?: "{}")
+                    lastKnownScheduleVersion = json.optLong("version", lastKnownScheduleVersion)
+                    lastKnownPlaylistVersion = json.optLong("playlist_version", lastKnownPlaylistVersion)
+                    val sched = json.optJSONObject("schedule")
+                    if (sched == null) {
+                        // No active schedule now – clear local persisted schedule & stop playback
+                        Log.i("GeekDS", "Server reports no active schedule; clearing local schedule")
+                        clearLocalData()
+                        runOnUiThread { stopCurrentPlayback() }
+                        return
+                    }
+                    val schedule = Schedule(
+                        playlistId = sched.getInt("playlist_id"),
+                        name = sched.optString("name", null),
+                        daysOfWeek = sched.getJSONArray("days_of_week").let { a -> (0 until a.length()).map { a.getString(it) } },
+                        timeSlotStart = sched.getString("time_slot_start"),
+                        timeSlotEnd = sched.getString("time_slot_end"),
+                        validFrom = sched.optString("valid_from", null),
+                        validUntil = sched.optString("valid_until", null),
+                        isEnabled = sched.getBoolean("is_enabled")
+                    )
+                    saveSchedule(this@MainActivity, schedule)
+                    currentPlaylistId = schedule.playlistId
+                    fetchPlaylist(schedule.playlistId)
+                } catch (e: Exception) {
+                    Log.e("GeekDS", "Error processing device schedule", e)
+                }
+            }
+        })
+    }
 
-        val urlString = "$cmsUrl/api/devices/$id"
-        Log.d("GeekDS", "Building heartbeat request to: $urlString")
-
+    // Helper function to fetch and cache playlists for offline use
+    private fun fetchAndCachePlaylist(playlistId: Int) {
         val req = Request.Builder()
-            .url(urlString)
-            .patch(body)
+            .url("$cmsUrl/api/playlists/$playlistId")
+            .get()
             .build()
 
         client.newCall(req).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
-                handleConnectionError("heartbeat", e)
+                Log.w("GeekDS", "Failed to pre-cache playlist $playlistId: ${e.message}")
             }
 
             override fun onResponse(call: Call, response: Response) {
-                when (response.code) {
-                    200 -> {
-                        // Successful heartbeat - extract device info from response
-                        lastSuccessfulConnection = System.currentTimeMillis()
-                        connectionFailureCount = 0
+                if (!response.isSuccessful) return
 
-                        // Check if server returned updated device info
-                        try {
-                            val responseBody = response.body?.string()
-                            if (responseBody != null) {
-                                val deviceInfo = JSONObject(responseBody)
-                                val serverDeviceName = deviceInfo.getString("name")
+                try {
+                    val resp = response.body?.string()
+                    val obj = JSONObject(resp)
+                    val mediaDetailsJson = obj.optJSONArray("media_details")
+                    val mediaFiles = mutableListOf<MediaFile>()
 
-                                // Update device name if it changed in CMS
-                                if (serverDeviceName != deviceName) {
-                                    deviceName = serverDeviceName
-                                    saveDeviceName(serverDeviceName)
-                                    Log.i("GeekDS", "Device name updated from server: '$serverDeviceName'")
+                    if (mediaDetailsJson != null) {
+                        for (i in 0 until mediaDetailsJson.length()) {
+                            val media = mediaDetailsJson.getJSONObject(i)
+                            mediaFiles.add(
+                                MediaFile(
+                                    filename = media.getString("filename"),
+                                    duration = media.optInt("duration", 0),
+                                    type = media.optString("type", "video/mp4")
+                                )
+                            )
+                        }
+                    } else {
+                        val mediaFilesJson = obj.getJSONArray("media_files")
+                        for (i in 0 until mediaFilesJson.length()) {
+                            val media = mediaFilesJson.getJSONObject(i)
+                            mediaFiles.add(
+                                MediaFile(
+                                    filename = media.getString("filename"),
+                                    duration = media.optInt("duration", 0),
+                                    type = media.optString("type", "video/mp4")
+                                )
+                            )
+                        }
+                    }
+
+                    val playlist = Playlist(id = playlistId, mediaFiles = mediaFiles)
+                    savePlaylistById(this@MainActivity, playlistId, playlist)
+                    Log.i("GeekDS", "Cached playlist $playlistId with ${mediaFiles.size} files")
+
+                    // Start downloading media files in background for offline use
+                    mediaFiles.forEach { mediaFile ->
+                        val file = File(getExternalFilesDir(null), mediaFile.filename)
+                        if (!file.exists() || file.length() == 0L) {
+                            downloadMediaWithCallback(mediaFile.filename) { success ->
+                                if (success) {
+                                    Log.i("GeekDS", "Pre-downloaded media: ${mediaFile.filename}")
                                 }
                             }
-                        } catch (e: Exception) {
-                            // Not critical if we can't parse response - just log and continue
-                            Log.w("GeekDS", "Could not parse heartbeat response for device info: ${e.message}")
                         }
+                    }
 
-                        setState(State.IDLE, "Heartbeat sent for device $id (name: $deviceName, ip: $currentIp)")
-                        Log.d("GeekDS", "Heartbeat sent with updated device info - name: '$deviceName', ip: '$currentIp'")
-                    }
-                    404 -> {
-                        // Device was deleted from CMS: enter registration flow
-                        // During registration we poll by UUID first; if the device was manually reinserted,
-                        // polling /check-registration/by-uuid/:uuid will auto-complete without a code.
-                        Log.w("GeekDS", "Device $id was deleted from CMS - entering registration flow")
-                        clearDeviceRegistration()
-                        showRegistrationScreen()
-                    }
-                    else -> {
-                        handleConnectionError("heartbeat", Exception("HTTP ${response.code}"))
-                    }
+                } catch (e: Exception) {
+                    Log.e("GeekDS", "Error caching playlist $playlistId", e)
                 }
             }
         })
     }
 
     private fun clearDeviceRegistration() {
+        Log.w("GeekDS", "Clearing device registration - invalidating all cached data except UUID")
+
         deviceId = null
+        isPlaylistActive = false
+        currentPlaylistId = null
+        lastKnownScheduleVersion = 0
+        lastKnownPlaylistVersion = 0
+        lastAllSchedulesVersion = 0
+
         val sharedPrefs = getSharedPreferences("DevicePrefs", Context.MODE_PRIVATE)
         with(sharedPrefs.edit()) {
             putInt("device_id", -1) // Use -1 as invalid device ID
             apply()
         }
 
-        // Also clear selected keys from main prefs (preserve device_uuid) and reset device name
+        // Clear ALL cached data from main prefs EXCEPT device_uuid
         val mainPrefs = getSharedPreferences("geekds_prefs", MODE_PRIVATE)
-        mainPrefs.edit()
-            .remove("device_id")
-            .remove("device_name")
-            .remove("schedule")
-            .remove("playlist")
-            .apply()
+        val savedUuid = mainPrefs.getString("device_uuid", null) // Preserve UUID
+
+        // Get all keys and filter out only UUID
+        val allKeys = mainPrefs.all.keys
+        val editor = mainPrefs.edit()
+
+        allKeys.forEach { key ->
+            if (key != "device_uuid") {
+                editor.remove(key)
+                Log.d("GeekDS", "Cleared cached key: $key")
+            }
+        }
+        editor.apply()
+
+        Log.i("GeekDS", "Cleared all cached schedules, playlists, and preferences (preserved UUID: ${savedUuid?.take(8)}...)")
+
         deviceName = "ARC-A-GR-18" // Reset to default
+
+        // Delete all downloaded media files to free space
+        try {
+            val mediaDir = getExternalFilesDir(null)
+            if (mediaDir != null && mediaDir.exists()) {
+                val files = mediaDir.listFiles()
+                var deletedCount = 0
+                files?.forEach { file ->
+                    if (file.isFile && file.name != "config.json") { // Keep config.json
+                        if (file.delete()) {
+                            deletedCount++
+                            Log.d("GeekDS", "Deleted cached media: ${file.name}")
+                        }
+                    }
+                }
+                Log.i("GeekDS", "Deleted $deletedCount cached media files")
+            }
+        } catch (e: Exception) {
+            Log.e("GeekDS", "Error deleting cached media files", e)
+        }
 
         // Stop all background activities
         stopAllActivities()
@@ -857,9 +1124,11 @@ private fun checkRegistrationByUuidOrIp(uuid: String, ip: String, pollingRunnabl
 
     private fun requestRegistrationCode() {
         val currentIp = getLocalIpAddress() ?: "unknown"
+        val currentUuid = deviceUuid ?: "unknown"
 
         val json = JSONObject().apply {
             put("ip", currentIp)
+            put("uuid", currentUuid)  // Send UUID for server-side tracking
         }
 
         val body = json.toString().toRequestBody("application/json".toMediaType())
@@ -930,11 +1199,14 @@ private fun checkRegistrationByUuidOrIp(uuid: String, ip: String, pollingRunnabl
                 Log.d("GeekDS", "[REGISTERING] Poll attempt=$attempt")
                 val uuid = deviceUuid
                 if (uuid != null) {
-                    Log.d("GeekDS", "[REGISTERING] Checking by UUID: $uuid (fallback to IP $ip)")
-                    checkRegistrationByUuidOrIp(uuid, ip, this)
+                    Log.d("GeekDS", "[REGISTERING] Checking registration by UUID ONLY: $uuid")
+                    checkRegistrationByUuid(uuid, this)
                 } else {
-                    Log.d("GeekDS", "[REGISTERING] Checking by IP: $ip")
-                    checkRegistrationStatus(ip, this)
+                    Log.e("GeekDS", "[REGISTERING] ERROR: No UUID available! Cannot check registration.")
+                    // Retry generating UUID
+                    deviceUuid = generateHardwareBasedUuid()
+                    saveDeviceUuid(deviceUuid!!)
+                    handler.postDelayed(this, 5000)
                 }
             }
         }
@@ -953,7 +1225,10 @@ private fun checkRegistrationByUuidOrIp(uuid: String, ip: String, pollingRunnabl
         return minOf(delay, maxDelay)
     }
 
-    // Fallback IP-based registration polling with smart retry
+    // DEPRECATED: IP-based registration is unreliable (DHCP can reassign IPs)
+    // Kept for reference only - do not use
+    // Use checkRegistrationByUuid() instead
+    /*
     private fun checkRegistrationStatus(ip: String, pollingRunnable: Runnable) {
         registrationCheckAttempts++
 
@@ -1019,6 +1294,7 @@ private fun checkRegistrationByUuidOrIp(uuid: String, ip: String, pollingRunnabl
             }
         })
     }
+    */
 
     private fun stopRegistrationPolling() {
         registrationPollingRunnable?.let { handler.removeCallbacks(it) }
@@ -1419,7 +1695,6 @@ private fun checkRegistrationByUuidOrIp(uuid: String, ip: String, pollingRunnabl
                 val obj = JSONObject(resp)
 
                 val playlistTimestamp = obj.optString("updated_at")
-
                 Log.i("GeekDS", "Processing playlist response...")
 
                 // Always process the playlist data, regardless of timestamp
@@ -1457,13 +1732,29 @@ private fun checkRegistrationByUuidOrIp(uuid: String, ip: String, pollingRunnabl
                 }
 
                 val playlist = Playlist(id = playlistId, mediaFiles = mediaFiles)
+
+                // Check if playlist content actually changed by comparing with saved playlist
+                val savedPlaylist = loadPlaylist(this@MainActivity)
+                val contentChanged = savedPlaylist == null ||
+                        savedPlaylist.mediaFiles.size != playlist.mediaFiles.size ||
+                        savedPlaylist.mediaFiles.zip(playlist.mediaFiles).any { (old, new) ->
+                            old.filename != new.filename
+                        }
+
                 savePlaylist(this@MainActivity, playlist)
 
                 // Download media - the download process will handle starting playback when ready
-                Log.i("GeekDS", "Starting media download for playlist $playlistId with ${mediaFiles.size} files")
-                downloadPlaylistMedia(playlist)
+                Log.i("GeekDS", "Starting media download for playlist $playlistId with ${mediaFiles.size} files (content changed: $contentChanged)")
 
-                setState(State.IDLE, "Media synced. Downloading files...")
+                // Only proceed if this differs from current or not yet active OR content changed
+                val shouldDownload = !isPlaylistActive || currentPlaylistId != playlistId || player == null || contentChanged
+                if (shouldDownload) {
+                    downloadPlaylistMedia(playlist)
+                    setState(State.IDLE, "Media synced. Downloading files...")
+                } else {
+                    Log.i("GeekDS", "Playlist unchanged and already playing – skipping reload")
+                    setState(State.IDLE, "Playlist unchanged")
+                }
             }
         })
     }
@@ -1808,8 +2099,147 @@ private fun checkRegistrationByUuidOrIp(uuid: String, ip: String, pollingRunnabl
         Log.d("GeekDS", "=== END DEBUG INFO ===")
     }
 
+    // NEW: Smart multi-schedule enforcement for offline schedule switching
+    private fun enforceScheduleWithMultiple(schedules: List<Schedule>) {
+        // Get current time in UTC
+        val now = ZonedDateTime.now(ZoneId.of("UTC"))
+        val currentDay = now.dayOfWeek.name.lowercase()
+        val currentTime = now.format(DateTimeFormatter.ofPattern("HH:mm"))
+
+        Log.d("GeekDS", "=== MULTI-SCHEDULE CHECK ===")
+        Log.d("GeekDS", "Current UTC: $currentDay $currentTime")
+        Log.d("GeekDS", "Checking ${schedules.size} cached schedules")
+
+        fun timeToMinutes(timeStr: String): Int {
+            val parts = timeStr.split(":")
+            if (parts.size < 2) return 0
+            return (parts[0].toIntOrNull() ?: 0) * 60 + (parts[1].toIntOrNull() ?: 0)
+        }
+
+        val currentMinutes = timeToMinutes(currentTime)
+
+        // DEBUG: Log all schedules
+        schedules.forEachIndexed { index, sched ->
+            Log.d("GeekDS", "Schedule[$index]: '${sched.name}' playlist=${sched.playlistId}")
+            Log.d("GeekDS", "  Days: ${sched.daysOfWeek.joinToString(",")}")
+            Log.d("GeekDS", "  Time: ${sched.timeSlotStart}-${sched.timeSlotEnd}")
+            Log.d("GeekDS", "  Valid: ${sched.validFrom} to ${sched.validUntil}")
+            Log.d("GeekDS", "  Enabled: ${sched.isEnabled}")
+        }
+
+        // Find the active schedule for RIGHT NOW
+        val activeSchedule = schedules.find { schedule ->
+            Log.d("GeekDS", "Checking schedule '${schedule.name}':")
+
+            if (!schedule.isEnabled) {
+                Log.d("GeekDS", "  ❌ Disabled")
+                return@find false
+            }
+
+            // Check day of week
+            if (!schedule.daysOfWeek.contains(currentDay)) {
+                Log.d("GeekDS", "  ❌ Wrong day (need ${schedule.daysOfWeek.joinToString(",")}, today is $currentDay)")
+                return@find false
+            }
+            Log.d("GeekDS", "  ✅ Day matches")
+
+            // Check validity period
+            fun parseValidityDate(dateStr: String?): LocalDate? {
+                if (dateStr.isNullOrBlank() || dateStr.equals("null", ignoreCase = true)) return null
+                return try {
+                    ZonedDateTime.parse(dateStr).toLocalDate()
+                } catch (e: Exception) {
+                    try {
+                        LocalDate.parse(dateStr)
+                    } catch (e: Exception) {
+                        null
+                    }
+                }
+            }
+
+            val validFrom = parseValidityDate(schedule.validFrom)
+            val validUntil = parseValidityDate(schedule.validUntil)
+
+            if (validFrom != null && now.toLocalDate().isBefore(validFrom)) {
+                Log.d("GeekDS", "  ❌ Before valid period (starts $validFrom)")
+                return@find false
+            }
+            if (validUntil != null && now.toLocalDate().isAfter(validUntil)) {
+                Log.d("GeekDS", "  ❌ After valid period (ended $validUntil)")
+                return@find false
+            }
+            Log.d("GeekDS", "  ✅ Valid period OK")
+
+            // Check time slot
+            val startMinutes = timeToMinutes(schedule.timeSlotStart)
+            val endMinutes = timeToMinutes(schedule.timeSlotEnd)
+
+            val inTimeSlot = currentMinutes in startMinutes..endMinutes
+            Log.d("GeekDS", "  Time check: current=$currentMinutes, range=$startMinutes-$endMinutes")
+            if (!inTimeSlot) {
+                Log.d("GeekDS", "  ❌ Outside time window")
+                return@find false
+            }
+
+            Log.d("GeekDS", "  ✅✅✅ ACTIVE SCHEDULE FOUND!")
+            true
+        }
+
+        if (activeSchedule != null) {
+            Log.i("GeekDS", "MULTI-SCHEDULE: Active='${activeSchedule.name}' playlist=${activeSchedule.playlistId}")
+
+            // Save as current schedule
+            saveSchedule(this, activeSchedule)
+
+            // Check if we need to switch playlists
+            val needsSwitch = !isPlaylistActive || currentPlaylistId != activeSchedule.playlistId
+
+            if (needsSwitch) {
+                currentPlaylistId = activeSchedule.playlistId
+
+                // Try to load cached playlist first
+                val cachedPlaylist = loadPlaylistById(this, activeSchedule.playlistId)
+                if (cachedPlaylist != null) {
+                    Log.i("GeekDS", "*** STARTING/SWITCHING TO CACHED PLAYLIST ${activeSchedule.playlistId} ***")
+                    savePlaylist(this, cachedPlaylist) // Set as current
+                    isPlaylistActive = true
+                    runOnUiThread {
+                        startPlaylistPlayback(cachedPlaylist)
+                    }
+                } else {
+                    Log.w("GeekDS", "Playlist ${activeSchedule.playlistId} not cached, fetching from server...")
+                    fetchPlaylist(activeSchedule.playlistId)
+                }
+            }
+        } else {
+            Log.i("GeekDS", "MULTI-SCHEDULE: No active schedule for current time window")
+            if (isPlaylistActive) {
+                Log.i("GeekDS", "*** STOPPING PLAYBACK *** - no active schedule")
+                isPlaylistActive = false
+                currentPlaylistId = null
+                runOnUiThread { showStandby() }
+            }
+        }
+    }
+
     // Enhanced schedule enforcement with new schedule format
     private fun enforceSchedule() {
+        // FIRST: Try to use multi-schedule enforcement if we have cached schedules
+        val allSchedules = loadAllSchedules(this)
+
+        if (allSchedules != null && allSchedules.isNotEmpty()) {
+            Log.i("GeekDS", "=========================================")
+            Log.i("GeekDS", "ENFORCE: Found ${allSchedules.size} cached schedules, using multi-schedule mode")
+            Log.i("GeekDS", "ENFORCE: isPlaylistActive=$isPlaylistActive, currentPlaylistId=$currentPlaylistId")
+            Log.i("GeekDS", "=========================================")
+            // Use smart multi-schedule enforcement for offline switching
+            enforceScheduleWithMultiple(allSchedules)
+            return
+        } else {
+            Log.w("GeekDS", "enforceSchedule: No cached schedules found (allSchedules=${allSchedules?.size ?: "null"}), falling back to single schedule")
+        }
+
+        // FALLBACK: Use old single-schedule logic
         val schedule = loadSchedule(this) ?: run {
             // Only log once per minute to avoid spam
             val now = System.currentTimeMillis()
@@ -1915,8 +2345,11 @@ private fun checkRegistrationByUuidOrIp(uuid: String, ip: String, pollingRunnabl
 
         // Convert HH:mm time to minutes since midnight for proper comparison
         fun timeToMinutes(timeStr: String): Int {
-            val (hours, minutes) = timeStr.split(":").map { it.toInt() }
-            return hours * 60 + minutes
+            val parts = timeStr.split(":")
+            if (parts.size < 2) return 0
+            val hours = parts[0].toIntOrNull() ?: 0
+            val minutes = parts[1].toIntOrNull() ?: 0
+            return hours * 60 + minutes // ignore seconds if present
         }
 
         val currentMinutes = timeToMinutes(currentTime)
@@ -2315,6 +2748,26 @@ private fun checkRegistrationByUuidOrIp(uuid: String, ip: String, pollingRunnabl
         return Gson().fromJson(json, Schedule::class.java)
     }
 
+    // Save all schedules for offline schedule switching
+    fun saveAllSchedules(context: Context, schedules: List<Schedule>) {
+        val prefs = context.getSharedPreferences("geekds_prefs", Context.MODE_PRIVATE)
+        prefs.edit().putString("all_schedules", Gson().toJson(schedules)).apply()
+        Log.i("GeekDS", "Saved ${schedules.size} schedules for offline use")
+    }
+
+    // Load all cached schedules
+    fun loadAllSchedules(context: Context): List<Schedule>? {
+        val prefs = context.getSharedPreferences("geekds_prefs", Context.MODE_PRIVATE)
+        val json = prefs.getString("all_schedules", null) ?: return null
+        return try {
+            val type = object : com.google.gson.reflect.TypeToken<List<Schedule>>() {}.type
+            Gson().fromJson<List<Schedule>>(json, type)
+        } catch (e: Exception) {
+            Log.e("GeekDS", "Failed to load all schedules", e)
+            null
+        }
+    }
+
     fun savePlaylist(context: Context, playlist: Playlist) {
         val prefs = context.getSharedPreferences("geekds_prefs", Context.MODE_PRIVATE)
         prefs.edit().putString("playlist", Gson().toJson(playlist)).apply()
@@ -2324,6 +2777,24 @@ private fun checkRegistrationByUuidOrIp(uuid: String, ip: String, pollingRunnabl
         val prefs = context.getSharedPreferences("geekds_prefs", Context.MODE_PRIVATE)
         val json = prefs.getString("playlist", null) ?: return null
         return Gson().fromJson(json, Playlist::class.java)
+    }
+
+    // Save playlist by ID for caching multiple playlists
+    fun savePlaylistById(context: Context, playlistId: Int, playlist: Playlist) {
+        val prefs = context.getSharedPreferences("geekds_prefs", Context.MODE_PRIVATE)
+        prefs.edit().putString("playlist_$playlistId", Gson().toJson(playlist)).apply()
+        Log.i("GeekDS", "Saved playlist $playlistId with ${playlist.mediaFiles.size} files")
+    }
+
+    fun loadPlaylistById(context: Context, playlistId: Int): Playlist? {
+        val prefs = context.getSharedPreferences("geekds_prefs", Context.MODE_PRIVATE)
+        val json = prefs.getString("playlist_$playlistId", null) ?: return null
+        return try {
+            Gson().fromJson(json, Playlist::class.java)
+        } catch (e: Exception) {
+            Log.e("GeekDS", "Failed to load playlist $playlistId", e)
+            null
+        }
     }
 
     // WebSocket connection management
@@ -2377,25 +2848,25 @@ private fun checkRegistrationByUuidOrIp(uuid: String, ip: String, pollingRunnabl
     // Smart detection of ExoPlayer state
     private fun isExoPlayerActiveWithContent(): Boolean {
         val currentPlayer = player ?: return false
-        
+
         return try {
             // Check if player has content loaded
             val hasContent = currentPlayer.mediaItemCount > 0
-            
+
             // Check player state - consider READY, BUFFERING, or ENDED as "active with content"
             val playbackState = currentPlayer.playbackState
             val isActiveState = playbackState == androidx.media3.common.Player.STATE_READY ||
-                               playbackState == androidx.media3.common.Player.STATE_BUFFERING ||
-                               playbackState == androidx.media3.common.Player.STATE_ENDED
-            
+                    playbackState == androidx.media3.common.Player.STATE_BUFFERING ||
+                    playbackState == androidx.media3.common.Player.STATE_ENDED
+
             // Check if currently playing or was recently playing (paused but has content)
             val isPlaying = currentPlayer.isPlaying
             val hasPlayedContent = currentPlayer.contentPosition > 0 || currentPlayer.currentPosition > 0
-            
+
             val isActive = hasContent && isActiveState && (isPlaying || hasPlayedContent)
-            
+
             Log.d("GeekDS", "ExoPlayer state - hasContent: $hasContent, state: $playbackState, isPlaying: $isPlaying, hasPlayedContent: $hasPlayedContent, result: $isActive")
-            
+
             isActive
         } catch (e: Exception) {
             Log.w("GeekDS", "Error checking ExoPlayer state: ${e.message}")
@@ -2492,32 +2963,32 @@ private fun checkRegistrationByUuidOrIp(uuid: String, ip: String, pollingRunnabl
         return try {
             val currentPlayer = player ?: return false
             val currentMediaItem = currentPlayer.currentMediaItem ?: return false
-            
+
             // Get the current media URI
             val mediaUri = currentMediaItem.localConfiguration?.uri
             if (mediaUri == null) {
                 Log.d("GeekDS", "No media URI available for frame extraction")
                 return false
             }
-            
+
             Log.d("GeekDS", "Attempting frame extraction from media URI: $mediaUri")
-            
+
             // Use MediaMetadataRetriever to get frame at current position
             val retriever = MediaMetadataRetriever()
-            
+
             retriever.setDataSource(this, mediaUri)
-            
+
             // Get current playback position in microseconds
             val currentPositionMs = currentPlayer.currentPosition
             val currentPositionUs = currentPositionMs * 1000L
-            
+
             Log.d("GeekDS", "Extracting frame at position: ${currentPositionMs}ms")
-            
+
             // Get frame at current position
             val frameBitmap = retriever.getFrameAtTime(currentPositionUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-            
+
             retriever.release()
-            
+
             if (frameBitmap != null && !frameBitmap.isRecycled && frameBitmap.width > 1 && frameBitmap.height > 1) {
                 Log.d("GeekDS", "SUCCESS: Frame extracted from ExoPlayer media: ${frameBitmap.width}x${frameBitmap.height}")
                 uploadProcessedScreenshot(frameBitmap)
@@ -2526,7 +2997,7 @@ private fun checkRegistrationByUuidOrIp(uuid: String, ip: String, pollingRunnabl
                 Log.d("GeekDS", "MediaMetadataRetriever returned null or invalid bitmap")
                 return false
             }
-            
+
         } catch (e: Exception) {
             Log.w("GeekDS", "MediaMetadataRetriever frame extraction failed: ${e.message}")
             false

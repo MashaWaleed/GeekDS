@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useRef, useDeferredValue } from 'react';
+import { FixedSizeList as VirtualList } from 'react-window';
 import {
   Paper,
   Typography,
@@ -60,6 +61,8 @@ function MediaManager() {
   const [currentFolder, setCurrentFolder] = useState(null);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [currentFileName, setCurrentFileName] = useState('');
   const [viewMode, setViewMode] = useState('list');
   const [searchTerm, setSearchTerm] = useState('');
   const deferredSearch = useDeferredValue(searchTerm);
@@ -117,6 +120,9 @@ function MediaManager() {
     setUploading(true);
     
     for (const file of files) {
+      setCurrentFileName(file.name);
+      setUploadProgress(0);
+      
       const formData = new FormData();
       formData.append('file', file);
       if (selectedFolder && selectedFolder !== 'none') {
@@ -124,9 +130,38 @@ function MediaManager() {
       }
       
       try {
-        await fetch(`${API_URL}/api/media`, {
-          method: 'POST',
-          body: formData,
+        await new Promise((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          
+          // Track upload progress
+          xhr.upload.addEventListener('progress', (e) => {
+            if (e.lengthComputable) {
+              const percentComplete = Math.round((e.loaded / e.total) * 100);
+              setUploadProgress(percentComplete);
+            }
+          });
+          
+          // Handle completion
+          xhr.addEventListener('load', () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              resolve();
+            } else {
+              reject(new Error(`Upload failed with status ${xhr.status}`));
+            }
+          });
+          
+          // Handle errors
+          xhr.addEventListener('error', () => {
+            reject(new Error('Network error during upload'));
+          });
+          
+          xhr.addEventListener('abort', () => {
+            reject(new Error('Upload aborted'));
+          });
+          
+          // Send request
+          xhr.open('POST', `${API_URL}/api/media`);
+          xhr.send(formData);
         });
       } catch (error) {
         console.error('Error uploading file:', file.name, error);
@@ -134,6 +169,8 @@ function MediaManager() {
     }
     
     setUploading(false);
+    setUploadProgress(0);
+    setCurrentFileName('');
     fetchMedia();
     // Reset file input
     if (fileInput.current) {
@@ -464,42 +501,57 @@ function MediaManager() {
                   <TableCell align="right" sx={{ width: 120 }}>Actions</TableCell>
                 </TableRow>
               </TableHead>
-              <TableBody>
-                {filteredMedia.map(file => (
-                  <TableRow key={file.id} hover>
-                    <TableCell sx={{ width: '40%' }}>
-                      <Box display="flex" alignItems="center">
-                        {getFileIcon(file.type)}
-                        <Box ml={1}>
-                          <Typography variant="body2">{file.filename}</Typography>
-                        </Box>
-                      </Box>
-                    </TableCell>
-                    <TableCell sx={{ width: '15%' }}>
-                      <Chip label={file.type} size="small" variant="outlined" />
-                    </TableCell>
-                    <TableCell sx={{ width: 100 }}>
-                      {file.duration ? formatDuration(file.duration) : '-'}
-                    </TableCell>
-                    <TableCell sx={{ width: '20%' }}>
-                      {file.folder_id ? 
-                        folders.find(f => f.id === file.folder_id)?.name || 'Unknown' : 
-                        '-'
-                      }
-                    </TableCell>
-                    <TableCell sx={{ width: 140 }}>{new Date(file.upload_date).toLocaleDateString()}</TableCell>
-                    <TableCell align="right" sx={{ width: 120 }}>
-                      <IconButton
-                        size="small"
-                        onClick={(e) => handleMenuOpen(e, file)}
-                      >
-                        <MoreVertIcon />
-                      </IconButton>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
             </Table>
+            <VirtualList
+              height={480}
+              itemSize={56}
+              itemCount={filteredMedia.length}
+              width={'100%'}
+              style={{ overflowX: 'hidden' }}
+            >
+              {({ index, style }) => {
+                const file = filteredMedia[index];
+                return (
+                  <div style={style}>
+                    <Table>
+                      <TableBody>
+                        <TableRow key={file.id} hover>
+                          <TableCell sx={{ width: '40%' }}>
+                            <Box display="flex" alignItems="center">
+                              {getFileIcon(file.type)}
+                              <Box ml={1}>
+                                <Typography variant="body2">{file.filename}</Typography>
+                              </Box>
+                            </Box>
+                          </TableCell>
+                          <TableCell sx={{ width: '15%' }}>
+                            <Chip label={file.type} size="small" variant="outlined" />
+                          </TableCell>
+                          <TableCell sx={{ width: 100 }}>
+                            {file.duration ? formatDuration(file.duration) : '-'}
+                          </TableCell>
+                          <TableCell sx={{ width: '20%' }}>
+                            {file.folder_id ? 
+                              folders.find(f => f.id === file.folder_id)?.name || 'Unknown' : 
+                              '-'
+                            }
+                          </TableCell>
+                          <TableCell sx={{ width: 140 }}>{new Date(file.upload_date).toLocaleDateString()}</TableCell>
+                          <TableCell align="right" sx={{ width: 120 }}>
+                            <IconButton
+                              size="small"
+                              onClick={(e) => handleMenuOpen(e, file)}
+                            >
+                              <MoreVertIcon />
+                            </IconButton>
+                          </TableCell>
+                        </TableRow>
+                      </TableBody>
+                    </Table>
+                  </div>
+                );
+              }}
+            </VirtualList>
           </TableContainer>
         )}
       </Paper>
@@ -561,6 +613,50 @@ function MediaManager() {
             {editingFolder ? 'Update' : 'Create'}
           </Button>
         </DialogActions>
+      </Dialog>
+
+      {/* Upload Progress Dialog */}
+      <Dialog 
+        open={uploading} 
+        maxWidth="sm" 
+        fullWidth
+        disableEscapeKeyDown
+      >
+        <DialogTitle>Uploading Media</DialogTitle>
+        <DialogContent>
+          <Box sx={{ textAlign: 'center', py: 3 }}>
+            <Typography variant="body1" gutterBottom>
+              {currentFileName}
+            </Typography>
+            <Box sx={{ position: 'relative', display: 'inline-flex', my: 3 }}>
+              <CircularProgress 
+                variant="determinate" 
+                value={uploadProgress} 
+                size={80}
+                thickness={4}
+              />
+              <Box
+                sx={{
+                  top: 0,
+                  left: 0,
+                  bottom: 0,
+                  right: 0,
+                  position: 'absolute',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <Typography variant="h6" component="div" color="text.secondary">
+                  {`${uploadProgress}%`}
+                </Typography>
+              </Box>
+            </Box>
+            <Typography variant="body2" color="text.secondary">
+              Please wait while the file is being uploaded...
+            </Typography>
+          </Box>
+        </DialogContent>
       </Dialog>
     </Box>
   );

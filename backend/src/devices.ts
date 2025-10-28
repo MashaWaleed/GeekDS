@@ -3,7 +3,7 @@ import { pool } from './models';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
-import { cacheMiddleware, invalidateCache, CACHE_KEYS, CACHE_TTL } from './redis';
+import { cacheMiddleware, invalidateCache, CACHE_KEYS, CACHE_TTL, getRedisClient } from './redis';
 
 const router = Router();
 
@@ -83,6 +83,7 @@ setInterval(() => {
 // Store pending registrations in memory (in production, use Redis)
 const pendingRegistrations = new Map<string, {
   ip: string;
+  uuid: string;  // Add UUID for durable device identification
   timestamp: number;
 }>();
 
@@ -122,22 +123,27 @@ router.get('/', cacheMiddleware(CACHE_KEYS.DEVICES, CACHE_TTL.DEVICES), async (r
 
 // NEW: Generate registration code for device
 router.post('/register-request', async (req, res) => {
-  const { ip } = req.body;
+  const { ip, uuid } = req.body;
   
   if (!ip) {
     return res.status(400).json({ error: 'IP address required' });
   }
 
+  if (!uuid) {
+    return res.status(400).json({ error: 'UUID required' });
+  }
+
   // Generate 6-digit code
   const code = Math.floor(100000 + Math.random() * 900000).toString();
   
-  // Store pending registration
+  // Store pending registration with UUID
   pendingRegistrations.set(code, {
     ip,
+    uuid,
     timestamp: Date.now()
   });
 
-  console.log(`Registration code generated: ${code} for IP: ${ip}`);
+  console.log(`Registration code generated: ${code} for UUID: ${uuid.substring(0, 8)}... (IP: ${ip})`);
   
   res.json({ code });
 });
@@ -157,16 +163,16 @@ router.post('/register-device', async (req, res) => {
   }
 
   try {
-    // Create the device
+    // Create the device with UUID (primary identifier)
     const result = await pool.query(
-      'INSERT INTO devices (name, ip, status, last_ping) VALUES ($1, $2, $3, NOW()) RETURNING *',
-      [name.trim(), pendingReg.ip, 'online']
+      'INSERT INTO devices (name, ip, uuid, status, last_ping) VALUES ($1, $2, $3, $4, NOW()) RETURNING *',
+      [name.trim(), pendingReg.ip, pendingReg.uuid, 'online']
     );
 
     // Remove from pending registrations
     pendingRegistrations.delete(code);
 
-    console.log(`Device registered: ${name} (ID: ${result.rows[0].id}) with IP: ${pendingReg.ip}`);
+    console.log(`Device registered: ${name} (ID: ${result.rows[0].id}) with UUID: ${pendingReg.uuid.substring(0, 8)}... (IP: ${pendingReg.ip})`);
 
     // Invalidate devices cache so it shows up immediately in the dashboard
     await invalidateCache(CACHE_KEYS.DEVICES + '*');
@@ -288,7 +294,7 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
-// FIXED: Update device status (heartbeat) - NO AUTO-RECREATION, returns 404 when device doesn't exist
+// FIXED: Update device status (legacy heartbeat) - retained for backward compatibility
 router.patch('/:id', async (req, res) => {
   const { status, current_media, system_info, ip, uuid } = req.body;
   const { id } = req.params;
@@ -326,6 +332,326 @@ router.patch('/:id', async (req, res) => {
   } catch (error) {
     console.error('Error updating device:', error);
     res.status(500).json({ error: 'Failed to update device' });
+  }
+});
+
+// NEW MERGED HEARTBEAT ENDPOINT
+// Contract:
+// PATCH /api/devices/:id/heartbeat
+// Body: {
+//   playback_state: 'playing' | 'standby',
+//   versions: { schedule: number, playlist: number, commands_cursor: number },
+//   name?: string, ip?: string, uuid?: string
+// }
+// Response: {
+//   schedule_changed: boolean,
+//   playlist_changed: boolean,
+//   new_versions: { schedule: number, playlist: number },
+//   active_playlist_id: number|null,
+//   commands: [{ id, type, request_id? }]
+// }
+// In-memory last version/cache (volatile, improves disappearance detection without schema change)
+const lastDeviceVersions: Record<string, { scheduleVersion: number; playlistVersion: number; hadActive: boolean; allSchedulesVersion: number }> = {};
+
+// Batch ping updates queue - flushes every 5 seconds
+const pendingPingUpdates = new Map<string, { playback_state: string | null; timestamp: number }>();
+
+// Flush batch updates every 5 seconds
+setInterval(async () => {
+  if (pendingPingUpdates.size === 0) return;
+  
+  const updates = Array.from(pendingPingUpdates.entries());
+  pendingPingUpdates.clear();
+  
+  try {
+    // Batch update all devices in single query
+    for (const [deviceId, data] of updates) {
+      await pool.query(
+        'UPDATE devices SET last_ping = NOW(), status = $1, current_media = $2 WHERE id = $3',
+        ['online', data.playback_state, deviceId]
+      );
+    }
+    console.log(`[Heartbeat] Batch updated ${updates.length} device pings`);
+  } catch (error) {
+    console.error('Batch ping update error:', error);
+  }
+}, 5000);
+
+router.patch('/:id/heartbeat', async (req, res) => {
+  const { id } = req.params;
+  const {
+    playback_state,
+    versions = {},
+    name,
+    ip,
+    uuid
+  } = req.body || {};
+
+  try {
+    // Check Redis cache first for schedule data
+    const redisClient = getRedisClient();
+    const cacheKey = `device:${id}:schedule_cache`;
+    let cachedScheduleData: any = null;
+    
+    if (redisClient && redisClient.isReady) {
+      try {
+        const cached = await redisClient.get(cacheKey);
+        if (cached) {
+          cachedScheduleData = JSON.parse(cached);
+        }
+      } catch (err) {
+        console.error('Redis cache read error:', err);
+      }
+    }
+
+    const clientScheduleVersion = parseInt(versions.schedule || 0, 10) || 0;
+    const clientPlaylistVersion = parseInt(versions.playlist || 0, 10) || 0;
+    const clientAllSchedulesVersion = parseInt(versions.all_schedules || 0, 10) || 0;
+
+    let scheduleVersion = 0;
+    let playlistVersion = 0;
+    let activePlaylistId: number | null = null;
+    let allSchedulesVersion = 0;
+    let scheduleChanged = false;
+    let playlistChanged = false;
+    let activeSchedule = null;
+    let needsDbQuery = true;
+
+    // Check if we can use cached data (versions match)
+    if (cachedScheduleData) {
+      const cachedVersions = cachedScheduleData.versions || {};
+      
+      if (cachedVersions.schedule === clientScheduleVersion &&
+          cachedVersions.playlist === clientPlaylistVersion &&
+          cachedVersions.all_schedules === clientAllSchedulesVersion) {
+        
+        // Use cached response - no DB query needed!
+        scheduleVersion = cachedVersions.schedule;
+        playlistVersion = cachedVersions.playlist;
+        allSchedulesVersion = cachedVersions.all_schedules;
+        activePlaylistId = cachedScheduleData.active_playlist_id;
+        scheduleChanged = false;
+        playlistChanged = false;
+        needsDbQuery = false;
+        
+        console.log(`[Heartbeat] Cache hit for device ${id} - skipping schedule queries`);
+      }
+    }
+
+    // Only query database if cache miss or versions changed
+    if (needsDbQuery) {
+      // Determine active schedule for this device (server-side filtering)
+      const now = new Date();
+      const day = now.toLocaleDateString('en-GB', { weekday: 'long' }).toLowerCase();
+      const timeStr = now.toISOString().substring(11,16); // HH:mm from ISO
+
+      const scheduleQuery = await pool.query(
+        `SELECT s.*, p.updated_at as playlist_updated_at, p.id as pl_id,
+                EXTRACT(EPOCH FROM s.updated_at)*1000 AS schedule_version_ms,
+                EXTRACT(EPOCH FROM p.updated_at)*1000 AS playlist_version_ms
+         FROM schedules s
+         JOIN playlists p ON p.id = s.playlist_id
+         WHERE s.device_id = $1
+           AND s.is_enabled = true
+           AND (s.valid_from IS NULL OR s.valid_from <= CURRENT_DATE)
+           AND (s.valid_until IS NULL OR s.valid_until >= CURRENT_DATE)
+           AND $2 = ANY (s.days_of_week)
+           AND s.time_slot_start <= $3::time
+           AND s.time_slot_end >= $3::time
+         ORDER BY s.time_slot_start
+         LIMIT 1`,
+        [id, day, timeStr]
+      );
+
+      if (scheduleQuery.rows.length > 0) {
+        const row = scheduleQuery.rows[0];
+        activeSchedule = row;
+        scheduleVersion = Math.floor(row.schedule_version_ms) || 0;
+        playlistVersion = Math.floor(row.playlist_version_ms) || 0;
+        activePlaylistId = row.pl_id;
+      }
+
+      // Check ALL schedules version to detect edits to inactive schedules
+      const allSchedulesQuery = await pool.query(
+        `SELECT MAX(EXTRACT(EPOCH FROM updated_at)*1000) AS max_version
+         FROM schedules
+         WHERE device_id = $1 AND is_enabled = true`,
+        [id]
+      );
+      allSchedulesVersion = Math.floor(allSchedulesQuery.rows[0]?.max_version || 0);
+
+      const prev = lastDeviceVersions[id] || { scheduleVersion: 0, playlistVersion: 0, hadActive: false, allSchedulesVersion: 0 };
+      const hasActiveNow = !!activeSchedule;
+      
+      // Check if active schedule changed OR if any schedule was edited (including inactive ones)
+      const activeScheduleChanged = (scheduleVersion > 0 && scheduleVersion !== clientScheduleVersion) || (prev.hadActive && !hasActiveNow) || (!prev.hadActive && hasActiveNow);
+      const anyScheduleEdited = allSchedulesVersion > 0 && allSchedulesVersion !== clientAllSchedulesVersion;
+      scheduleChanged = activeScheduleChanged || anyScheduleEdited;
+      
+      playlistChanged = playlistVersion > 0 && playlistVersion !== clientPlaylistVersion;
+
+      // Update memory snapshot
+      lastDeviceVersions[id] = { scheduleVersion, playlistVersion, hadActive: hasActiveNow, allSchedulesVersion };
+
+      // Cache the result in Redis for 30 seconds
+      if (redisClient && redisClient.isReady) {
+        try {
+          const cacheData = {
+            versions: { schedule: scheduleVersion, playlist: playlistVersion, all_schedules: allSchedulesVersion },
+            active_playlist_id: activePlaylistId,
+            cached_at: Date.now()
+          };
+          await redisClient.setEx(cacheKey, 30, JSON.stringify(cacheData));
+          console.log(`[Heartbeat] Cached schedule data for device ${id}`);
+        } catch (err) {
+          console.error('Redis cache write error:', err);
+        }
+      }
+    }
+
+    // Queue the ping update for batch processing (instead of immediate UPDATE)
+    pendingPingUpdates.set(id, { playback_state: playback_state || null, timestamp: Date.now() });
+
+    // Update metadata fields immediately if provided (these are rare updates)
+    if (ip || name || uuid) {
+      await pool.query(
+        `UPDATE devices
+         SET ip = COALESCE($1, ip),
+             name = COALESCE($2, name),
+             uuid = COALESCE($3, uuid)
+         WHERE id = $4`,
+        [ip || null, name || null, uuid || null, id]
+      );
+    }
+
+    // 3. Pull pending screenshot requests (acts as commands queue)
+    const screenshotReq = await pool.query(
+      `SELECT id FROM screenshot_requests
+       WHERE device_id = $1 AND status = 'pending'
+       ORDER BY requested_at ASC LIMIT 1`,
+      [id]
+    );
+
+    const commands: any[] = [];
+    if (screenshotReq.rows.length > 0) {
+      const reqId = screenshotReq.rows[0].id;
+      // Mark as processing
+      await pool.query(
+        'UPDATE screenshot_requests SET status = $1, processed_at = NOW() WHERE id = $2',
+        ['processing', reqId]
+      );
+      commands.push({ id: reqId, type: 'screenshot_request', request_id: reqId });
+    }
+
+    return res.json({
+      schedule_changed: scheduleChanged,
+      playlist_changed: playlistChanged,
+      new_versions: { schedule: scheduleVersion, playlist: playlistVersion, all_schedules: allSchedulesVersion },
+      active_playlist_id: activePlaylistId,
+      commands
+    });
+  } catch (error) {
+    console.error('Merged heartbeat error:', error);
+    return res.status(500).json({ error: 'Heartbeat processing failed' });
+  }
+});
+
+// NEW: Get ALL schedules for a device (for offline caching)
+router.get('/:id/schedules/all', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const q = await pool.query(
+      `SELECT s.*, 
+              EXTRACT(EPOCH FROM s.updated_at)*1000 AS schedule_version_ms
+       FROM schedules s
+       WHERE s.device_id = $1
+         AND s.is_enabled = true
+       ORDER BY s.time_slot_start`,
+      [id]
+    );
+
+    const schedules = q.rows.map(row => ({
+      id: row.id,
+      playlist_id: row.playlist_id,
+      name: row.name,
+      days_of_week: row.days_of_week,
+      time_slot_start: row.time_slot_start,
+      time_slot_end: row.time_slot_end,
+      valid_from: row.valid_from,
+      valid_until: row.valid_until,
+      is_enabled: row.is_enabled,
+      version: Math.floor(row.schedule_version_ms) || 0
+    }));
+
+    // Calculate aggregate version: MAX of all schedule updated_at timestamps
+    // This matches the heartbeat calculation (MAX version) for consistency
+    const aggregateVersion = schedules.length > 0 
+      ? Math.max(...schedules.map(s => s.version))
+      : 0;
+
+    return res.json({
+      schedules,
+      count: schedules.length,
+      version: aggregateVersion  // Aggregate version changes when ANY schedule changes
+    });
+  } catch (error) {
+    console.error('Fetch all schedules error:', error);
+    return res.status(500).json({ error: 'Failed to fetch schedules' });
+  }
+});
+
+// NEW: Device-specific schedule endpoint returns current active schedule snapshot & versions
+router.get('/:id/schedule', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const now = new Date();
+    const day = now.toLocaleDateString('en-GB', { weekday: 'long' }).toLowerCase();
+    const timeStr = now.toISOString().substring(11,16); // HH:mm
+    const q = await pool.query(
+      `SELECT s.*, p.updated_at as playlist_updated_at, p.id as pl_id,
+              EXTRACT(EPOCH FROM s.updated_at)*1000 AS schedule_version_ms,
+              EXTRACT(EPOCH FROM p.updated_at)*1000 AS playlist_version_ms
+       FROM schedules s
+       JOIN playlists p ON p.id = s.playlist_id
+       WHERE s.device_id = $1
+         AND s.is_enabled = true
+         AND (s.valid_from IS NULL OR s.valid_from <= CURRENT_DATE)
+         AND (s.valid_until IS NULL OR s.valid_until >= CURRENT_DATE)
+         AND $2 = ANY (s.days_of_week)
+         AND s.time_slot_start <= $3::time
+         AND s.time_slot_end >= $3::time
+       ORDER BY s.time_slot_start
+       LIMIT 1`,
+      [id, day, timeStr]
+    );
+
+    if (q.rows.length === 0) {
+      return res.json({
+        version: 0,
+        playlist_version: 0,
+        schedule: null
+      });
+    }
+
+    const row = q.rows[0];
+    const schedule = {
+      playlist_id: row.playlist_id,
+      name: row.name,
+      days_of_week: row.days_of_week,
+      time_slot_start: row.time_slot_start,
+      time_slot_end: row.time_slot_end,
+      valid_from: row.valid_from,
+      valid_until: row.valid_until,
+      is_enabled: row.is_enabled
+    };
+    return res.json({
+      version: Math.floor(row.schedule_version_ms) || 0,
+      playlist_version: Math.floor(row.playlist_version_ms) || 0,
+      schedule
+    });
+  } catch (error) {
+    console.error('Device schedule fetch error:', error);
+    return res.status(500).json({ error: 'Failed to fetch device schedule' });
   }
 });
 
