@@ -388,6 +388,11 @@ router.patch('/:id/heartbeat', async (req, res) => {
   } = req.body || {};
 
   try {
+    // Check if device exists before proceeding
+    const deviceCheck = await pool.query('SELECT id FROM devices WHERE id = $1', [id]);
+    if (deviceCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Device not found' });
+    }
     // Check Redis cache first for schedule data
     const redisClient = getRedisClient();
     const cacheKey = `device:${id}:schedule_cache`;
