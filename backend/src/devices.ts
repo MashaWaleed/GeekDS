@@ -517,15 +517,14 @@ router.patch('/:id/heartbeat', async (req, res) => {
     // Queue the ping update for batch processing (instead of immediate UPDATE)
     pendingPingUpdates.set(id, { playback_state: playback_state || null, timestamp: Date.now() });
 
-    // Update metadata fields immediately if provided (these are rare updates)
-    if (ip || name || uuid) {
+    // Update metadata fields immediately if provided (ignore name to prevent overwrite)
+    if (ip || uuid) {
       await pool.query(
         `UPDATE devices
          SET ip = COALESCE($1, ip),
-             name = COALESCE($2, name),
-             uuid = COALESCE($3, uuid)
-         WHERE id = $4`,
-        [ip || null, name || null, uuid || null, id]
+             uuid = COALESCE($2, uuid)
+         WHERE id = $3`,
+        [ip || null, uuid || null, id]
       );
     }
 
