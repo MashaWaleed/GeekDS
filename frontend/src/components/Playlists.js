@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState, useDeferredValue } from 'react';
 import { FixedSizeList as VirtualList } from 'react-window';
+import { api } from '../utils/api';
 import {
   Paper,
   Typography,
@@ -87,7 +88,7 @@ function Playlists() {
   const deferredMediaSearch = useDeferredValue(mediaSearchTerm);
   const [selectedMediaFolder, setSelectedMediaFolder] = useState('');
   const [showMediaPreview, setShowMediaPreview] = useState(false);
-  const [menuAnchor, setMenuAnchor] = useState(null);
+  const [menuPosition, setMenuPosition] = useState(null);
   const [menuItem, setMenuItem] = useState(null);
   const [viewMode, setViewMode] = useState('list'); // 'list' or 'grid'
 
@@ -108,10 +109,10 @@ function Playlists() {
   const fetchPlaylists = () => {
     setLoading(true);
     Promise.all([
-      fetch(`${API_URL}/api/playlists`).then(res => res.json()),
-      fetch(`${API_URL}/api/media`).then(res => res.json()),
-      fetch(`${API_URL}/api/folders?type=playlist`).then(res => res.json()).catch(() => []),
-      fetch(`${API_URL}/api/folders?type=media`).then(res => res.json()).catch(() => [])
+      api('/api/playlists').then(res => res.json()),
+      api('/api/media').then(res => res.json()),
+      api('/api/folders?type=playlist').then(res => res.json()).catch(() => []),
+      api('/api/folders?type=media').then(res => res.json()).catch(() => [])
     ]).then(([playlistsData, mediaData, foldersData, mediaFoldersData]) => {
       setPlaylists(playlistsData);
       setMedia(mediaData);
@@ -173,12 +174,12 @@ function Playlists() {
     }
     
     const url = editingPlaylist 
-      ? `${API_URL}/api/playlists/${editingPlaylist.id}`
-      : `${API_URL}/api/playlists`;
+      ? `/api/playlists/${editingPlaylist.id}`
+      : `/api/playlists`;
     const method = editingPlaylist ? 'PATCH' : 'POST';
     
     try {
-      await fetch(url, {
+      await api(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(playlistData),
@@ -193,7 +194,7 @@ function Playlists() {
   
   const handleEdit = async (playlist) => {
     try {
-      const response = await fetch(`${API_URL}/api/playlists/${playlist.id}`);
+      const response = await api(`/api/playlists/${playlist.id}`);
       const playlistData = await response.json();
       
       setEditingPlaylist(playlist);
@@ -219,7 +220,7 @@ function Playlists() {
   const handleDelete = async (id) => {
     if (window.confirm('Are you sure you want to delete this playlist?')) {
       try {
-        await fetch(`${API_URL}/api/playlists/${id}`, { method: 'DELETE' });
+        await api(`/api/playlists/${id}`, { method: 'DELETE' });
         fetchPlaylists();
       } catch (error) {
         console.error('Error deleting playlist:', error);
@@ -231,7 +232,7 @@ function Playlists() {
     if (!folderName.trim()) return;
     
     try {
-      const response = await fetch(`${API_URL}/api/folders`, {
+      const response = await api('/api/folders', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -254,7 +255,7 @@ function Playlists() {
   const handleDeleteFolder = async (folder) => {
     if (window.confirm(`Are you sure you want to delete the folder "${folder.name}"?`)) {
       try {
-        await fetch(`${API_URL}/api/folders/${folder.id}`, { method: 'DELETE' });
+        await api(`/api/folders/${folder.id}`, { method: 'DELETE' });
         fetchPlaylists();
         if (selectedFolder === folder.id.toString()) {
           setSelectedFolder('');
@@ -303,12 +304,14 @@ function Playlists() {
   };
 
   const handleMenuOpen = (event, item) => {
-    setMenuAnchor(event.currentTarget);
+    event.stopPropagation();
+    const rect = event.currentTarget.getBoundingClientRect();
+    setMenuPosition({ top: rect.bottom, left: rect.left });
     setMenuItem(item);
   };
 
   const handleMenuClose = () => {
-    setMenuAnchor(null);
+    setMenuPosition(null);
     setMenuItem(null);
   };
 
@@ -373,13 +376,13 @@ function Playlists() {
 
   const renderPlaylistTable = () => (
     <TableContainer>
-      <Table size="small" sx={{ tableLayout: 'fixed' }}>
+      <Table size="small" sx={{ tableLayout: 'fixed', width: '100%' }}>
         <TableHead>
           <TableRow>
-            <TableCell sx={{ width: '35%' }}>Name</TableCell>
+            <TableCell sx={{ width: '35%', maxWidth: '35%' }}>Name</TableCell>
             <TableCell sx={{ width: 100 }}>Files</TableCell>
             <TableCell sx={{ width: 120 }}>Duration</TableCell>
-            <TableCell sx={{ width: '20%' }}>Folder</TableCell>
+            <TableCell sx={{ width: '20%', maxWidth: '20%' }}>Folder</TableCell>
             <TableCell sx={{ width: 140 }}>Updated</TableCell>
             <TableCell align="right" sx={{ width: 120 }}>Actions</TableCell>
           </TableRow>
@@ -397,22 +400,30 @@ function Playlists() {
           const stats = getPlaylistStats(playlist);
           return (
             <div style={style} key={playlist.id}>
-              <Table size="small" sx={{ tableLayout: 'fixed' }}>
+              <Table size="small" sx={{ tableLayout: 'fixed', width: '100%' }}>
                 <TableBody>
                   <TableRow hover>
-                    <TableCell sx={{ width: '35%' }}>
-                      <Box display="flex" alignItems="center">
-                        <PlaylistPlayIcon sx={{ mr: 1, color: 'text.secondary' }} />
-                        {playlist.name}
+                    <TableCell sx={{ width: '35%', maxWidth: '35%' }}>
+                      <Box display="flex" alignItems="center" sx={{ overflow: 'hidden' }}>
+                        <PlaylistPlayIcon sx={{ mr: 1, color: 'text.secondary', flexShrink: 0 }} />
+                        <Tooltip title={playlist.name} placement="top">
+                          <Typography variant="body2" noWrap>
+                            {playlist.name}
+                          </Typography>
+                        </Tooltip>
                       </Box>
                     </TableCell>
                     <TableCell sx={{ width: 100 }}>{stats.count}</TableCell>
                     <TableCell sx={{ width: 120 }}>{formatDuration(stats.duration)}</TableCell>
-                    <TableCell sx={{ width: '20%' }}>
-                      {playlist.folder_id ? 
-                        folders.find(f => f.id === playlist.folder_id)?.name || 'Unknown' : 
-                        'None'
-                      }
+                    <TableCell sx={{ width: '20%', maxWidth: '20%' }}>
+                      <Tooltip title={playlist.folder_id ? folders.find(f => f.id === playlist.folder_id)?.name || 'Unknown' : 'None'} placement="top">
+                        <Typography variant="body2" noWrap>
+                          {playlist.folder_id ? 
+                            folders.find(f => f.id === playlist.folder_id)?.name || 'Unknown' : 
+                            'None'
+                          }
+                        </Typography>
+                      </Tooltip>
                     </TableCell>
                     <TableCell sx={{ width: 140 }}>{new Date(playlist.updated_at).toLocaleDateString()}</TableCell>
                     <TableCell align="right" sx={{ width: 120 }}>
@@ -589,9 +600,18 @@ function Playlists() {
 
       {/* Context Menu */}
       <Menu
-        anchorEl={menuAnchor}
-        open={Boolean(menuAnchor)}
+        open={Boolean(menuPosition)}
         onClose={handleMenuClose}
+        anchorReference="anchorPosition"
+        anchorPosition={menuPosition}
+        anchorOrigin={{
+          vertical: 'top',
+          horizontal: 'left',
+        }}
+        transformOrigin={{
+          vertical: 'top',
+          horizontal: 'left',
+        }}
       >
         <MenuItem onClick={() => {
           handleEdit(menuItem);
@@ -839,4 +859,4 @@ function Playlists() {
   );
 }
 
-export default Playlists; 
+export default Playlists;

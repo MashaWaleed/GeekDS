@@ -3,6 +3,7 @@ import multer from 'multer';
 import path from 'path';
 import { pool } from './models';
 import fs from 'fs';
+import { getVideoDurationInSeconds } from 'get-video-duration';
 
 const router = Router();
 const upload = multer({ dest: path.join(__dirname, '../media') });
@@ -32,10 +33,20 @@ router.post('/', upload.single('file'), async (req, res) => {
     const { originalname, filename, mimetype, size } = file;
     const { folder_id } = req.body; // Get folder_id from form data
     
+    let duration = 0;
+    try {
+      if (mimetype.startsWith('video/') || mimetype.startsWith('audio/')) {
+        duration = await getVideoDurationInSeconds(file.path);
+      }
+    } catch (durationError) {
+      console.error('Could not get media duration:', durationError);
+      // keep duration as 0 if analysis fails
+    }
+    
     // Save both the original filename and the saved (random) filename
     const result = await pool.query(
       'INSERT INTO media_files (filename, saved_filename, type, duration, folder_id) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-      [originalname, filename, mimetype, 0, folder_id || null] // Duration can be updated later
+      [originalname, filename, mimetype, duration, folder_id || null]
     );
     res.status(201).json(result.rows[0]);
   } catch (error) {
@@ -68,4 +79,4 @@ router.delete('/:id', async (req, res) => {
   res.json({ success: true });
 });
 
-export default router; 
+export default router;

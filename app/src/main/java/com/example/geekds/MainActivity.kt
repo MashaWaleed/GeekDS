@@ -1520,11 +1520,19 @@ class MainActivity : Activity() {
 
     private fun clearLocalData() {
         val prefs = getSharedPreferences("geekds_prefs", MODE_PRIVATE)
-        prefs.edit().remove("schedule").remove("playlist").apply()
+        prefs.edit()
+            .remove("schedule")
+            .remove("playlist")
+            .remove("all_schedules")  // CRITICAL: Clear cached schedules too!
+            .apply()
         isPlaylistActive = false
         currentPlaylistId = null
         lastScheduleTimestamp = null
         lastPlaylistTimestamp = null
+        // Reset version tracking so fresh fetch happens
+        lastAllSchedulesVersion = 0L
+        lastKnownScheduleVersion = 0L
+        Log.i("GeekDS", "Cleared all local schedule and playlist data")
     }
 
 

@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState, useTransition, useDeferredValue } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { FixedSizeList as List } from 'react-window';
+import { api } from '../utils/api';
 import {
   Paper,
   Typography,
@@ -101,7 +102,7 @@ function DeviceGrid() {
   const { data: devices = [], isFetching, refetch } = useQuery({
     queryKey: ['devices'],
     queryFn: async () => {
-      const res = await fetch(`${API_URL}/api/devices`);
+      const res = await api('/api/devices');
       if (!res.ok) throw new Error('Failed to load devices');
       return res.json();
     },
@@ -124,11 +125,9 @@ function DeviceGrid() {
     }
 
     try {
-      const response = await fetch(`${API_URL}/api/devices/register-device`, {
+            const response = await api('/api/devices/register-device', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           code: registrationCode.trim(),
           name: deviceName.trim()
@@ -160,11 +159,9 @@ function DeviceGrid() {
     }
 
     try {
-      const response = await fetch(`${API_URL}/api/devices/${editDevice.id}`, {
+            const response = await api(`/api/devices/${editDevice.id}`, {
         method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: editDevice.name.trim(),
           ip: editDevice.ip
@@ -192,7 +189,7 @@ function DeviceGrid() {
     if (!deviceToDelete) return;
 
     try {
-      const response = await fetch(`${API_URL}/api/devices/${deviceToDelete.id}`, {
+      const response = await api(`/api/devices/${deviceToDelete.id}`, {
         method: 'DELETE',
       });
 
@@ -226,7 +223,7 @@ function DeviceGrid() {
 
     try {
       // Request screenshot from device
-      const response = await fetch(`${API_URL}/api/devices/${device.id}/screenshot`, {
+      const response = await api(`/api/devices/${device.id}/screenshot`, {
         method: 'POST',
       });
 
@@ -251,7 +248,7 @@ function DeviceGrid() {
   const pollForScreenshot = (deviceId) => {
     const pollInterval = setInterval(async () => {
       try {
-        const response = await fetch(`${API_URL}/api/devices/${deviceId}/screenshot/status`);
+        const response = await api(`/api/devices/${deviceId}/screenshot/status`);
         const data = await response.json();
         
         if (response.ok && data.available) {
@@ -338,7 +335,7 @@ function DeviceGrid() {
 
   const handleSendCommand = async () => {
     try {
-      await fetch(`${API_URL}/api/devices/${cmdDevice}/command`, {
+      await api(`/api/devices/${cmdDevice}/command`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ command, parameters: JSON.parse(parameters) }),
@@ -359,8 +356,6 @@ function DeviceGrid() {
         sx={{ 
           height: '100%',
           minHeight: 250,
-          border: device.status === 'online' ? '2px solid' : '1px solid',
-          borderColor: device.status === 'online' ? 'success.main' : 'divider',
           '&:hover': { 
             boxShadow: 4,
             transform: 'translateY(-2px)',
@@ -480,12 +475,6 @@ function DeviceGrid() {
             <TableRow 
               key={device.id}
               hover
-              sx={{
-                '& td': { 
-                  borderLeft: device.status === 'online' ? '4px solid' : 'none',
-                  borderLeftColor: 'success.main'
-                }
-              }}
             >
               <TableCell sx={{ width: 140 }}>
                 <Chip
@@ -495,16 +484,30 @@ function DeviceGrid() {
                   size="small"
                 />
               </TableCell>
-              <TableCell sx={{ width: '28%' }}>
-                <Box display="flex" alignItems="center">
-                  <ComputerIcon sx={{ mr: 1, color: 'text.secondary' }} />
-                  {device.name}
-                </Box>
+              <TableCell sx={{ width: '28%', maxWidth: '28%' }}>
+                <Tooltip title={device.name} placement="top">
+                  <Box display="flex" alignItems="center" sx={{ overflow: 'hidden' }}>
+                    <ComputerIcon sx={{ mr: 1, color: 'text.secondary', flexShrink: 0 }} />
+                    <Typography variant="body2" noWrap>
+                      {device.name}
+                    </Typography>
+                  </Box>
+                </Tooltip>
               </TableCell>
-              <TableCell sx={{ width: '20%' }}>{device.ip}</TableCell>
+              <TableCell sx={{ width: '20%', maxWidth: '20%' }}>
+                <Tooltip title={device.ip} placement="top">
+                  <Typography variant="body2" noWrap>
+                    {device.ip}
+                  </Typography>
+                </Tooltip>
+              </TableCell>
               <TableCell sx={{ width: 140 }}>{getLastSeenText(device.last_ping)}</TableCell>
-              <TableCell>
-                {device.current_media || <em>None</em>}
+              <TableCell sx={{ maxWidth: 200 }}>
+                <Tooltip title={device.current_media || 'None'} placement="top">
+                  <Typography variant="body2" noWrap>
+                    {device.current_media || <em>None</em>}
+                  </Typography>
+                </Tooltip>
               </TableCell>
               <TableCell align="right" sx={{ width: 180 }}>
                 <Tooltip title="Send Command">
@@ -732,12 +735,6 @@ function DeviceGrid() {
                       <TableBody>
                         <TableRow 
                           hover
-                          sx={{
-                            '& td': { 
-                              borderLeft: device.status === 'online' ? '4px solid' : 'none',
-                              borderLeftColor: 'success.main'
-                            }
-                          }}
                         >
                           <TableCell sx={{ width: 140 }}>
                             <Chip
@@ -747,16 +744,30 @@ function DeviceGrid() {
                               size="small"
                             />
                           </TableCell>
-                          <TableCell sx={{ width: '28%' }}>
-                            <Box display="flex" alignItems="center">
-                              <ComputerIcon sx={{ mr: 1, color: 'text.secondary' }} />
-                              {device.name}
-                            </Box>
+                          <TableCell sx={{ width: '28%', maxWidth: '28%' }}>
+                            <Tooltip title={device.name} placement="top">
+                              <Box display="flex" alignItems="center" sx={{ overflow: 'hidden' }}>
+                                <ComputerIcon sx={{ mr: 1, color: 'text.secondary', flexShrink: 0 }} />
+                                <Typography variant="body2" noWrap>
+                                  {device.name}
+                                </Typography>
+                              </Box>
+                            </Tooltip>
                           </TableCell>
-                          <TableCell sx={{ width: '20%' }}>{device.ip}</TableCell>
+                          <TableCell sx={{ width: '20%', maxWidth: '20%' }}>
+                            <Tooltip title={device.ip} placement="top">
+                              <Typography variant="body2" noWrap>
+                                {device.ip}
+                              </Typography>
+                            </Tooltip>
+                          </TableCell>
                           <TableCell sx={{ width: 140 }}>{getLastSeenText(device.last_ping)}</TableCell>
-                          <TableCell>
-                            {device.current_media || <em>None</em>}
+                          <TableCell sx={{ maxWidth: 200 }}>
+                            <Tooltip title={device.current_media || 'None'} placement="top">
+                              <Typography variant="body2" noWrap>
+                                {device.current_media || <em>None</em>}
+                              </Typography>
+                            </Tooltip>
                           </TableCell>
                           <TableCell align="right" sx={{ width: 220 }}>
                             <Tooltip title="Screenshot">

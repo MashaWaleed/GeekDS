@@ -354,7 +354,7 @@ router.patch('/:id', async (req, res) => {
 const lastDeviceVersions: Record<string, { scheduleVersion: number; playlistVersion: number; hadActive: boolean; allSchedulesVersion: number }> = {};
 
 // Batch ping updates queue - flushes every 5 seconds
-const pendingPingUpdates = new Map<string, { playback_state: string | null; timestamp: number }>();
+const pendingPingUpdates = new Map<string, { current_media: string | null; timestamp: number }>();
 
 // Flush batch updates every 5 seconds
 setInterval(async () => {
@@ -368,7 +368,7 @@ setInterval(async () => {
     for (const [deviceId, data] of updates) {
       await pool.query(
         'UPDATE devices SET last_ping = NOW(), status = $1, current_media = $2 WHERE id = $3',
-        ['online', data.playback_state, deviceId]
+        ['online', data.current_media, deviceId]
       );
     }
     console.log(`[Heartbeat] Batch updated ${updates.length} device pings`);
@@ -421,6 +421,7 @@ router.patch('/:id/heartbeat', async (req, res) => {
     let playlistChanged = false;
     let activeSchedule = null;
     let needsDbQuery = true;
+    let activePlaylistName: string | null = null;
 
     // Check if we can use cached data (versions match)
     if (cachedScheduleData) {
@@ -451,7 +452,7 @@ router.patch('/:id/heartbeat', async (req, res) => {
       const timeStr = now.toISOString().substring(11,16); // HH:mm from ISO
 
       const scheduleQuery = await pool.query(
-        `SELECT s.*, p.updated_at as playlist_updated_at, p.id as pl_id,
+        `SELECT s.*, p.updated_at as playlist_updated_at, p.id as pl_id, p.name as playlist_name,
                 EXTRACT(EPOCH FROM s.updated_at)*1000 AS schedule_version_ms,
                 EXTRACT(EPOCH FROM p.updated_at)*1000 AS playlist_version_ms
          FROM schedules s
@@ -474,6 +475,7 @@ router.patch('/:id/heartbeat', async (req, res) => {
         scheduleVersion = Math.floor(row.schedule_version_ms) || 0;
         playlistVersion = Math.floor(row.playlist_version_ms) || 0;
         activePlaylistId = row.pl_id;
+        activePlaylistName = row.playlist_name;
       }
 
       // Check ALL schedules version to detect edits to inactive schedules
@@ -515,7 +517,8 @@ router.patch('/:id/heartbeat', async (req, res) => {
     }
 
     // Queue the ping update for batch processing (instead of immediate UPDATE)
-    pendingPingUpdates.set(id, { playback_state: playback_state || null, timestamp: Date.now() });
+    const currentMediaStatus = playback_state === 'playing' && activePlaylistName ? activePlaylistName : (playback_state || 'standby');
+    pendingPingUpdates.set(id, { current_media: currentMediaStatus, timestamp: Date.now() });
 
     // Update metadata fields immediately if provided (ignore name to prevent overwrite)
     if (ip || uuid) {

@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef, useDeferredValue } from 'react';
 import { FixedSizeList as VirtualList } from 'react-window';
+import { api, getAuthToken } from '../utils/api';
 import {
   Paper,
   Typography,
@@ -74,7 +75,7 @@ function MediaManager() {
   const [editingFolder, setEditingFolder] = useState(null);
   
   // Menu states
-  const [menuAnchor, setMenuAnchor] = useState(null);
+  const [menuPosition, setMenuPosition] = useState(null);
   const [menuItem, setMenuItem] = useState(null);
   
   const fileInput = useRef();
@@ -83,8 +84,8 @@ function MediaManager() {
   const fetchMedia = () => {
     setLoading(true);
     Promise.all([
-      fetch(`${API_URL}/api/media`).then(res => res.json()),
-      fetch(`${API_URL}/api/folders?type=media`).then(res => res.json()).catch(() => [])
+      api('/api/media').then(res => res.json()),
+      api('/api/folders?type=media').then(res => res.json()).catch(() => [])
     ]).then(([mediaData, foldersData]) => {
       setMedia(mediaData);
       setFolders(foldersData);
@@ -159,8 +160,15 @@ function MediaManager() {
             reject(new Error('Upload aborted'));
           });
           
-          // Send request
+          // Send request with authentication
           xhr.open('POST', `${API_URL}/api/media`);
+          
+          // Add authentication token
+          const token = getAuthToken();
+          if (token) {
+            xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+          }
+          
           xhr.send(formData);
         });
       } catch (error) {
@@ -181,7 +189,7 @@ function MediaManager() {
   const handleDelete = async (id) => {
     if (window.confirm('Are you sure you want to delete this media file?')) {
       try {
-        await fetch(`${API_URL}/api/media/${id}`, { method: 'DELETE' });
+        await api(`/api/media/${id}`, { method: 'DELETE' });
         fetchMedia();
       } catch (error) {
         console.error('Error deleting media:', error);
@@ -193,7 +201,7 @@ function MediaManager() {
     if (!folderName.trim()) return;
     
     try {
-      const response = await fetch(`${API_URL}/api/folders`, {
+      const response = await api('/api/folders', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -218,7 +226,7 @@ function MediaManager() {
     if (!folderName.trim() || !editingFolder) return;
     
     try {
-      const response = await fetch(`${API_URL}/api/folders/${editingFolder.id}`, {
+      const response = await api(`/api/folders/${editingFolder.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: folderName.trim() }),
@@ -238,7 +246,7 @@ function MediaManager() {
   const handleDeleteFolder = async (folder) => {
     if (window.confirm(`Are you sure you want to delete the folder "${folder.name}"? This will move all contained media to the root level.`)) {
       try {
-        await fetch(`${API_URL}/api/folders/${folder.id}`, { method: 'DELETE' });
+        await api(`/api/folders/${folder.id}`, { method: 'DELETE' });
         fetchMedia();
         if (selectedFolder === folder.id.toString()) {
           setSelectedFolder('');
@@ -271,12 +279,14 @@ function MediaManager() {
   };
 
   const handleMenuOpen = (event, item) => {
-    setMenuAnchor(event.currentTarget);
+    event.stopPropagation();
+    const rect = event.currentTarget.getBoundingClientRect();
+    setMenuPosition({ top: rect.bottom, left: rect.left });
     setMenuItem(item);
   };
 
   const handleMenuClose = () => {
-    setMenuAnchor(null);
+    setMenuPosition(null);
     setMenuItem(null);
   };
 
@@ -380,15 +390,30 @@ function MediaManager() {
                 value={selectedFolder}
                 label="Folder"
                 onChange={(e) => setSelectedFolder(e.target.value)}
+                MenuProps={{
+                  PaperProps: {
+                    style: { maxHeight: 250 }
+                  }
+                }}
               >
                 <MenuItem value="">All Folders</MenuItem>
                 <MenuItem value="none">No Folder</MenuItem>
                 {folders.map(folder => (
                   <MenuItem key={folder.id} value={folder.id.toString()}>
-                    <Box display="flex" alignItems="center">
+                    <Box display="flex" alignItems="center" sx={{ flexGrow: 1 }}>
                       <FolderIcon sx={{ mr: 1, fontSize: 16 }} />
-                      {folder.name}
+                      <ListItemText primary={folder.name} />
                     </Box>
+                    <IconButton
+                      size="small"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteFolder(folder);
+                      }}
+                      sx={{ mr: -1 }}
+                    >
+                      <DeleteIcon fontSize="small" />
+                    </IconButton>
                   </MenuItem>
                 ))}
               </Select>
@@ -490,13 +515,13 @@ function MediaManager() {
           </Grid>
         ) : (
           <TableContainer>
-            <Table size="small" sx={{ tableLayout: 'fixed' }}>
+            <Table size="small" sx={{ tableLayout: 'fixed', width: '100%' }}>
               <TableHead>
                 <TableRow>
-                  <TableCell sx={{ width: '40%' }}>File</TableCell>
-                  <TableCell sx={{ width: '15%' }}>Type</TableCell>
+                  <TableCell sx={{ width: '40%', maxWidth: '40%' }}>File</TableCell>
+                  <TableCell sx={{ width: '15%', maxWidth: '15%' }}>Type</TableCell>
                   <TableCell sx={{ width: 100 }}>Duration</TableCell>
-                  <TableCell sx={{ width: '20%' }}>Folder</TableCell>
+                  <TableCell sx={{ width: '20%', maxWidth: '20%' }}>Folder</TableCell>
                   <TableCell sx={{ width: 140 }}>Uploaded</TableCell>
                   <TableCell align="right" sx={{ width: 120 }}>Actions</TableCell>
                 </TableRow>
@@ -513,28 +538,38 @@ function MediaManager() {
                 const file = filteredMedia[index];
                 return (
                   <div style={style}>
-                    <Table>
+                    <Table size="small" sx={{ tableLayout: 'fixed', width: '100%' }}>
                       <TableBody>
                         <TableRow key={file.id} hover>
-                          <TableCell sx={{ width: '40%' }}>
-                            <Box display="flex" alignItems="center">
+                          <TableCell sx={{ width: '40%', maxWidth: '40%' }}>
+                            <Box display="flex" alignItems="center" sx={{ overflow: 'hidden' }}>
                               {getFileIcon(file.type)}
-                              <Box ml={1}>
-                                <Typography variant="body2">{file.filename}</Typography>
-                              </Box>
+                              <Tooltip title={file.filename} placement="top">
+                                <Typography variant="body2" noWrap sx={{ ml: 1 }}>
+                                  {file.filename}
+                                </Typography>
+                              </Tooltip>
                             </Box>
                           </TableCell>
-                          <TableCell sx={{ width: '15%' }}>
-                            <Chip label={file.type} size="small" variant="outlined" />
+                          <TableCell sx={{ width: '15%', maxWidth: '15%' }}>
+                            <Tooltip title={file.type} placement="top">
+                              <Typography variant="body2" noWrap>
+                                {file.type}
+                              </Typography>
+                            </Tooltip>
                           </TableCell>
                           <TableCell sx={{ width: 100 }}>
                             {file.duration ? formatDuration(file.duration) : '-'}
                           </TableCell>
-                          <TableCell sx={{ width: '20%' }}>
-                            {file.folder_id ? 
-                              folders.find(f => f.id === file.folder_id)?.name || 'Unknown' : 
-                              '-'
-                            }
+                          <TableCell sx={{ width: '20%', maxWidth: '20%' }}>
+                            <Tooltip title={file.folder_id ? folders.find(f => f.id === file.folder_id)?.name || 'Unknown' : '-'} placement="top">
+                              <Typography variant="body2" noWrap>
+                                {file.folder_id ? 
+                                  folders.find(f => f.id === file.folder_id)?.name || 'Unknown' : 
+                                  '-'
+                                }
+                              </Typography>
+                            </Tooltip>
                           </TableCell>
                           <TableCell sx={{ width: 140 }}>{new Date(file.upload_date).toLocaleDateString()}</TableCell>
                           <TableCell align="right" sx={{ width: 120 }}>
@@ -558,9 +593,18 @@ function MediaManager() {
 
       {/* Context Menu */}
       <Menu
-        anchorEl={menuAnchor}
-        open={Boolean(menuAnchor)}
+        open={Boolean(menuPosition)}
         onClose={handleMenuClose}
+        anchorReference="anchorPosition"
+        anchorPosition={menuPosition}
+        anchorOrigin={{
+          vertical: 'top',
+          horizontal: 'left',
+        }}
+        transformOrigin={{
+          vertical: 'top',
+          horizontal: 'left',
+        }}
       >
         <MenuItem onClick={() => {
           // Download file
@@ -662,4 +706,4 @@ function MediaManager() {
   );
 }
 
-export default MediaManager; 
+export default MediaManager;

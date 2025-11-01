@@ -8,7 +8,14 @@ const router = Router();
 router.get('/', cacheMiddleware(CACHE_KEYS.PLAYLISTS, CACHE_TTL.PLAYLISTS), async (req, res) => {
   try {
     const result = await pool.query(`
-      SELECT p.*, f.name as folder_name 
+      SELECT 
+        p.*, 
+        f.name as folder_name,
+        (
+          SELECT COALESCE(json_agg(pm.media_id ORDER BY pm.position), '[]'::json)
+          FROM playlist_media pm 
+          WHERE pm.playlist_id = p.id
+        ) as media_files
       FROM playlists p
       LEFT JOIN folders f ON p.folder_id = f.id
       ORDER BY p.id
@@ -120,4 +127,4 @@ router.delete('/:id', async (req, res) => {
   res.json({ success: true });
 });
 
-export default router; 
+export default router;

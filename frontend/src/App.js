@@ -14,17 +14,14 @@ import VideoLibraryIcon from '@mui/icons-material/VideoLibrary';
 import PlaylistPlayIcon from '@mui/icons-material/PlaylistPlay';
 import EventIcon from '@mui/icons-material/Event';
 import LogoutIcon from '@mui/icons-material/Logout';
-import LockIcon from '@mui/icons-material/Lock';
 import DeviceGrid from './components/DeviceGrid';
 import MediaManager from './components/MediaManager';
 import Playlists from './components/Playlists';
 import Schedules from './components/Schedules';
+import Login from './components/Login';
 import { BrowserRouter as Router, Routes, Route, useNavigate, Navigate } from 'react-router-dom';
+import { isAuthenticated, logout } from './utils/api';
 import Box from '@mui/material/Box';
-import Button from '@mui/material/Button';
-import TextField from '@mui/material/TextField';
-import Paper from '@mui/material/Paper';
-import Snackbar from '@mui/material/Snackbar';
 
 const theme = createTheme({
   palette: {
@@ -56,44 +53,21 @@ const navItems = [
   { label: 'Schedules', path: '/schedules', icon: <EventIcon /> },
 ];
 
-function LoginPage({ onLogin }) {
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
-
-  const handleSubmit = (e) => {
-    e.preventDefault();
-    if (username === 'eternaAdmin' && password === 'admin') {
-      onLogin();
-    } else {
-      setError('Invalid username or password');
-    }
-  };
-
-  return (
-    <Box sx={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f5f5f5' }}>
-      <Paper elevation={3} sx={{ p: 4, minWidth: 320 }}>
-        <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', mb: 2 }}>
-          <img 
-            src="/eternaHealthCareCity.png" 
-            alt="EternaHealthCareCity" 
-            style={{ height: 60, marginBottom: 16 }}
-          />
-          <Typography variant="h5" gutterBottom>EternaHealthCareCity Admin</Typography>
-        </Box>
-        <form onSubmit={handleSubmit}>
-          <TextField label="Username" fullWidth margin="normal" value={username} onChange={e => setUsername(e.target.value)} autoFocus />
-          <TextField label="Password" type="password" fullWidth margin="normal" value={password} onChange={e => setPassword(e.target.value)} />
-          <Button type="submit" variant="contained" color="primary" fullWidth sx={{ mt: 2 }}>Login</Button>
-        </form>
-        <Snackbar open={!!error} autoHideDuration={3000} onClose={() => setError('')} message={error} />
-      </Paper>
-    </Box>
-  );
+// Protected Route Component
+function ProtectedRoute({ children }) {
+  if (!isAuthenticated()) {
+    return <Navigate to="/login" replace />;
+  }
+  return children;
 }
 
-function AppContent({ onLogout }) {
+function AppContent() {
   const navigate = useNavigate();
+  
+  const handleLogout = () => {
+    logout();
+  };
+  
   return (
     <>
       <Drawer variant="permanent" sx={{ width: 220, flexShrink: 0, [`& .MuiDrawer-paper`]: { width: 220, boxSizing: 'border-box', background: 'linear-gradient(180deg, #E8F5E8 0%, #F1F8E9 100%)', color: '#2E7D32' } }}>
@@ -119,37 +93,14 @@ function AppContent({ onLogout }) {
             </ListItem>
           ))}
           <ListItem disablePadding>
-            <ListItemButton onClick={onLogout}>
+            <ListItemButton onClick={handleLogout}>
               <ListItemIcon sx={{ color: 'primary.main' }}><LogoutIcon /></ListItemIcon>
               <ListItemText primary="Logout" />
             </ListItemButton>
           </ListItem>
         </List>
       </Drawer>
-      <Container maxWidth={false} sx={{ mt: 8, ml: 28, mr: 4, maxWidth: 'calc(100vw - 280px)' }}>
-        <Box sx={{ 
-          display: 'flex', 
-          alignItems: 'center', 
-          justifyContent: 'center', 
-          mb: 4, 
-          background: 'linear-gradient(135deg, #4CAF50 0%, #2E7D32 100%)',
-          borderRadius: 3,
-          p: 3,
-          color: 'white',
-          boxShadow: '0 8px 32px rgba(76, 175, 80, 0.3)'
-        }}>
-          <Typography 
-            variant="h3" 
-            sx={{ 
-              fontWeight: 'bold',
-              textAlign: 'center',
-              textShadow: '2px 2px 4px rgba(0,0,0,0.3)',
-              letterSpacing: '1px'
-            }}
-          >
-            EternaHealth CMS
-          </Typography>
-        </Box>
+      <Container maxWidth={false} sx={{ mt: 4, ml: 28, mr: 4, maxWidth: 'calc(100vw - 280px)' }}>
         <Routes>
           <Route path="/" element={<DeviceGrid />} />
           <Route path="/media" element={<MediaManager />} />
@@ -163,25 +114,21 @@ function AppContent({ onLogout }) {
 }
 
 function App() {
-  const [loggedIn, setLoggedIn] = useState(() => !!localStorage.getItem('cms_logged_in'));
-
-  const handleLogin = () => {
-    localStorage.setItem('cms_logged_in', '1');
-    setLoggedIn(true);
-  };
-  const handleLogout = () => {
-    localStorage.removeItem('cms_logged_in');
-    setLoggedIn(false);
-  };
-
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
       <Router>
-        {loggedIn ? <AppContent onLogout={handleLogout} /> : <LoginPage onLogin={handleLogin} />}
+        <Routes>
+          <Route path="/login" element={<Login />} />
+          <Route path="/*" element={
+            <ProtectedRoute>
+              <AppContent />
+            </ProtectedRoute>
+          } />
+        </Routes>
       </Router>
     </ThemeProvider>
   );
 }
 
-export default App; 
+export default App;

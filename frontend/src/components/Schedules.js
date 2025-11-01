@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { FixedSizeList as VirtualList } from 'react-window';
+import { api } from '../utils/api';
 import {
   Paper,
   Typography,
@@ -90,7 +91,7 @@ function Schedules() {
   const [statusFilter, setStatusFilter] = useState('all');
   const [groupBy, setGroupBy] = useState('none'); // 'none', 'device', 'playlist', 'day'
   const [viewMode, setViewMode] = useState('table'); // 'table', 'cards'
-  const [menuAnchor, setMenuAnchor] = useState(null);
+  const [menuPosition, setMenuPosition] = useState(null);
   const [menuItem, setMenuItem] = useState(null);
 
   const API_URL = process.env.REACT_APP_API_URL;
@@ -180,18 +181,20 @@ function Schedules() {
   }, [schedules]);
 
   const handleMenuOpen = (event, item) => {
-    setMenuAnchor(event.currentTarget);
+    event.stopPropagation();
+    const rect = event.currentTarget.getBoundingClientRect();
+    setMenuPosition({ top: rect.bottom, left: rect.left });
     setMenuItem(item);
   };
 
   const handleMenuClose = () => {
-    setMenuAnchor(null);
+    setMenuPosition(null);
     setMenuItem(null);
   };
 
   const handleToggleStatus = async (schedule) => {
     try {
-      await fetch(`${API_URL}/api/schedules/${schedule.id}`, {
+      await api(`/api/schedules/${schedule.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ is_enabled: !schedule.is_enabled }),
@@ -228,8 +231,6 @@ function Schedules() {
           sx={{ 
             height: '100%',
             minHeight: 300,
-            border: isCurrentActive ? '2px solid' : '1px solid',
-            borderColor: isCurrentActive ? 'success.main' : 'divider',
             opacity: schedule.is_enabled ? 1 : 0.7
           }}
         >
@@ -307,23 +308,23 @@ function Schedules() {
 
   const renderScheduleTable = (schedules) => (
     <TableContainer>
-      <Table size="small">
+      <Table size="small" sx={{ tableLayout: 'fixed', width: '100%' }}>
         <TableHead>
           <TableRow>
-            <TableCell>Status</TableCell>
-            <TableCell>Name</TableCell>
-            <TableCell>Device</TableCell>
-            <TableCell>Playlist</TableCell>
-            <TableCell>Time Slot</TableCell>
-            <TableCell>Days</TableCell>
-            <TableCell>Valid Period</TableCell>
-            <TableCell align="right">Actions</TableCell>
+            <TableCell sx={{ width: '12%' }}>Status</TableCell>
+            <TableCell sx={{ width: '12%' }}>Name</TableCell>
+            <TableCell sx={{ width: '14%' }}>Device</TableCell>
+            <TableCell sx={{ width: '14%' }}>Playlist</TableCell>
+            <TableCell sx={{ width: '15%' }}>Time Slot</TableCell>
+            <TableCell sx={{ width: '12%' }}>Days</TableCell>
+            <TableCell sx={{ width: '13%' }}>Valid Period</TableCell>
+            <TableCell align="right" sx={{ width: '8%' }}>Actions</TableCell>
           </TableRow>
         </TableHead>
       </Table>
       <VirtualList
         height={480}
-        itemSize={56}
+        itemSize={85}
         itemCount={schedules.length}
         width={'100%'}
         style={{ overflowX: 'hidden' }}
@@ -336,83 +337,69 @@ function Schedules() {
           
           return (
             <div style={style}>
-              <Table>
+              <Table size="small" sx={{ tableLayout: 'fixed', width: '100%' }}>
                 <TableBody>
                   <TableRow 
                     key={sch.id} 
                     hover
                     sx={{ 
-                      opacity: sch.is_enabled ? 1 : 0.5,
-                      '& td': { 
-                        borderLeft: isCurrentActive ? '4px solid' : 'none',
-                        borderLeftColor: 'success.main'
-                      }
+                      opacity: sch.is_enabled ? 1 : 0.5
                     }}
                   >
-                    <TableCell>
-                      <Box display="flex" alignItems="center" gap={1}>
-                        <Chip
-                          icon={isCurrentActive ? <PlayIcon /> : <PauseIcon />}
-                          label={sch.is_enabled ? 'Active' : 'Disabled'}
-                          color={sch.is_enabled ? 'success' : 'default'}
-                          size="small"
-                        />
-                        {isCurrentActive && <Badge color="success" variant="dot" />}
-                      </Box>
+                    <TableCell sx={{ width: '12%', maxWidth: '12%' }}>
+                      <Chip
+                        icon={isCurrentActive ? <PlayIcon /> : <PauseIcon />}
+                        label={sch.is_enabled ? 'On' : 'Off'}
+                        color={sch.is_enabled ? 'success' : 'default'}
+                        size="small"
+                      />
                     </TableCell>
-                    <TableCell>{sch.name || <em>Unnamed</em>}</TableCell>
-                    <TableCell>
-                      <Box display="flex" alignItems="center">
-                        <DeviceIcon sx={{ mr: 1, fontSize: 16, color: 'text.secondary' }} />
-                        {device?.name || `ID: ${sch.device_id}`}
-                      </Box>
+                    <TableCell sx={{ width: '12%', maxWidth: '12%' }}>
+                      <Tooltip title={sch.name || 'Unnamed'} placement="top">
+                        <Typography variant="body2" noWrap>
+                          {sch.name || <em>Unnamed</em>}
+                        </Typography>
+                      </Tooltip>
                     </TableCell>
-                    <TableCell>
-                      <Box display="flex" alignItems="center">
-                        <PlaylistIcon sx={{ mr: 1, fontSize: 16, color: 'text.secondary' }} />
-                        {playlist?.name || `ID: ${sch.playlist_id}`}
-                      </Box>
+                    <TableCell sx={{ width: '14%', maxWidth: '14%' }}>
+                      <Tooltip title={device?.name || `ID: ${sch.device_id}`} placement="top">
+                        <Typography variant="body2" noWrap>
+                          {device?.name || `ID: ${sch.device_id}`}
+                        </Typography>
+                      </Tooltip>
                     </TableCell>
-                    <TableCell>
-                      <Typography variant="body2">
+                    <TableCell sx={{ width: '14%', maxWidth: '14%' }}>
+                      <Tooltip title={playlist?.name || `ID: ${sch.playlist_id}`} placement="top">
+                        <Typography variant="body2" noWrap>
+                          {playlist?.name || `ID: ${sch.playlist_id}`}
+                        </Typography>
+                      </Tooltip>
+                    </TableCell>
+                    <TableCell sx={{ width: '15%' }}>
+                      <Typography variant="body2" fontSize="0.8rem">
                         {`${toLocalTime(sch.time_slot_start)} - ${toLocalTime(sch.time_slot_end)}`}
                       </Typography>
-                      <Typography variant="caption" color="text.secondary">
-                        ({Intl.DateTimeFormat().resolvedOptions().timeZone})
+                    </TableCell>
+                    <TableCell sx={{ width: '12%' }}>
+                      <Typography variant="body2" fontSize="0.75rem" noWrap>
+                        {sch.days_of_week.map(d => d.slice(0,2).toUpperCase()).join(',')}
                       </Typography>
                     </TableCell>
-                    <TableCell>
-                      <Box display="flex" flexWrap="wrap" gap={0.5}>
-                        {sch.days_of_week.map(day => (
-                          <Chip
-                            key={day}
-                            label={day.slice(0, 3)}
-                            size="small"
-                            variant="outlined"
-                          />
-                        ))}
-                      </Box>
+                    <TableCell sx={{ width: '13%' }}>
+                      <Typography variant="body2" fontSize="0.75rem" noWrap>
+                        {sch.valid_from || sch.valid_until ? 
+                          `${sch.valid_from ? new Date(sch.valid_from).toLocaleDateString('en-US', {month:'short', day:'numeric'}) : 'Any'} - ${sch.valid_until ? new Date(sch.valid_until).toLocaleDateString('en-US', {month:'short', day:'numeric'}) : 'Any'}` :
+                          'Always'
+                        }
+                      </Typography>
                     </TableCell>
-                    <TableCell>
-                      {sch.valid_from || sch.valid_until ? (
-                        <Typography variant="body2">
-                          {sch.valid_from ? new Date(sch.valid_from).toLocaleDateString() : 'Any'} 
-                          {' → '}
-                          {sch.valid_until ? new Date(sch.valid_until).toLocaleDateString() : 'Any'}
-                        </Typography>
-                      ) : (
-                        <Typography variant="body2" color="text.secondary">Always</Typography>
-                      )}
-                    </TableCell>
-                    <TableCell align="right">
-                      <Tooltip title="More Options">
-                        <IconButton 
-                          size="small"
-                          onClick={(e) => handleMenuOpen(e, sch)}
-                        >
-                          <MoreVertIcon />
-                        </IconButton>
-                      </Tooltip>
+                    <TableCell align="right" sx={{ width: '8%' }}>
+                      <IconButton 
+                        size="small"
+                        onClick={(e) => handleMenuOpen(e, sch)}
+                      >
+                        <MoreVertIcon />
+                      </IconButton>
                     </TableCell>
                   </TableRow>
                 </TableBody>
@@ -426,7 +413,7 @@ function Schedules() {
 
   const fetchSchedules = () => {
     setLoading(true);
-    fetch(`${API_URL}/api/schedules`)
+    api('/api/schedules')
       .then(res => res.json())
       .then(data => {
         setSchedules(data);
@@ -441,8 +428,8 @@ function Schedules() {
 
   const fetchDependencies = () => {
     Promise.all([
-      fetch(`${API_URL}/api/devices`).then(res => res.json()),
-      fetch(`${API_URL}/api/playlists`).then(res => res.json())
+      api('/api/devices').then(res => res.json()),
+      api('/api/playlists').then(res => res.json())
     ]).then(([devicesData, playlistsData]) => {
       setDevices(devicesData);
       setPlaylists(playlistsData);
@@ -513,7 +500,7 @@ function Schedules() {
   const handleDelete = async (id) => {
     if (window.confirm('Are you sure you want to delete this schedule?')) {
         try {
-          const response = await fetch(`${API_URL}/api/schedules/${id}`, { method: 'DELETE' });
+          const response = await api(`/api/schedules/${id}`, { method: 'DELETE' });
           if (!response.ok) throw new Error('Failed to delete schedule on the server.');
           fetchSchedules();
         } catch (error) {
@@ -565,12 +552,12 @@ function Schedules() {
     };
 
     const url = editingSchedule
-      ? `${API_URL}/api/schedules/${editingSchedule.id}`
-      : `${API_URL}/api/schedules`;
+      ? `/api/schedules/${editingSchedule.id}`
+      : `/api/schedules`;
     const method = editingSchedule ? 'PATCH' : 'POST';
 
     try {
-      const response = await fetch(url, {
+      const response = await api(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -714,12 +701,13 @@ function Schedules() {
             </FormControl>
           </Grid>
 
-          <Grid item xs={12} md={3}>
+          <Grid item xs={12} md={2}>
             <Box display="flex" gap={1} justifyContent="flex-end">
               <Button
                 variant="contained"
                 startIcon={<AddIcon />}
                 onClick={handleOpenNewDialog}
+                size="small"
               >
                 New Schedule
               </Button>
@@ -806,9 +794,18 @@ function Schedules() {
 
       {/* Context Menu */}
       <Menu
-        anchorEl={menuAnchor}
-        open={Boolean(menuAnchor)}
+        open={Boolean(menuPosition)}
         onClose={handleMenuClose}
+        anchorReference="anchorPosition"
+        anchorPosition={menuPosition}
+        anchorOrigin={{
+          vertical: 'top',
+          horizontal: 'left',
+        }}
+        transformOrigin={{
+          vertical: 'top',
+          horizontal: 'left',
+        }}
       >
         <MenuItem onClick={() => {
           handleEdit(menuItem);
