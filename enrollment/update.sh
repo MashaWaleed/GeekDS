@@ -34,6 +34,6 @@ while true; do
 	current="$(dumpsys package com.example.geekds | grep 'versionName')"
 	current="${current##*=}" 
 	logger "Current Version : $current"
-	[[ "$current" < "$version" ]] && logger "$(busybox wget -q -O /sdcard/app.apk 192.168.1.11:5000/api/devices/apk/latest 2>&1)" && logger "$(pm install /sdcard/app.apk 2>&1)"
+	[[ "$current" < "$version" ]] && logger "$(busybox wget -q -O /sdcard/app.apk 192.168.1.11:5000/api/devices/apk/latest 2>&1)" && logger "$(pm uninstall com.example.geekds 2>&1)" && logger "$(pm install /sdcard/app.apk 2>&1)"
 	sleep 60s
 done
