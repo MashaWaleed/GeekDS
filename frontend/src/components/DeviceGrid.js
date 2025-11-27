@@ -34,7 +34,8 @@ import {
   FormControlLabel,
   Alert,
   Snackbar,
-  Fab
+  Fab,
+  CircularProgress
 } from '@mui/material';
 import {
   Search as SearchIcon,
@@ -95,6 +96,11 @@ function DeviceGrid() {
   const [screenshotDevice, setScreenshotDevice] = useState(null);
   const [screenshotUrl, setScreenshotUrl] = useState(null);
   const [screenshotLoading, setScreenshotLoading] = useState(false);
+
+  // Enrollment state
+  const [enrollOpen, setEnrollOpen] = useState(false);
+  const [enrollIp, setEnrollIp] = useState('');
+  const [enrollLoading, setEnrollLoading] = useState(false);
 
   const API_URL = process.env.REACT_APP_API_URL;
 
@@ -270,6 +276,47 @@ function DeviceGrid() {
         setSnackbar({ open: true, message: 'Screenshot request timed out', severity: 'warning' });
       }
     }, 30000);
+  };
+
+  // NEW: Enrollment handler
+  const handleEnrollDevice = async () => {
+    if (!enrollIp.trim()) {
+      setSnackbar({ open: true, message: 'Please enter a valid IP address', severity: 'error' });
+      return;
+    }
+
+    // Basic IP validation
+    const ipPattern = /^(\d{1,3}\.){3}\d{1,3}$/;
+    if (!ipPattern.test(enrollIp.trim())) {
+      setSnackbar({ open: true, message: 'Please enter a valid IP address (e.g., 192.168.1.13)', severity: 'error' });
+      return;
+    }
+
+    setEnrollLoading(true);
+
+    try {
+      const response = await api('/api/devices/enroll', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ip: enrollIp.trim() })
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Enrollment failed');
+      }
+
+      const data = await response.json();
+      setSnackbar({ open: true, message: `Device enrolled successfully: ${data.message}`, severity: 'success' });
+      setEnrollOpen(false);
+      setEnrollIp('');
+      queryClient.invalidateQueries(['devices']);
+    } catch (error) {
+      console.error('Enrollment error:', error);
+      setSnackbar({ open: true, message: error.message || 'Failed to enroll device', severity: 'error' });
+    } finally {
+      setEnrollLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -601,6 +648,14 @@ function DeviceGrid() {
                 onClick={() => setRegisterOpen(true)}
               >
                 Add Device
+              </Button>
+              <Button
+                variant="contained"
+                color="secondary"
+                startIcon={<QrCodeIcon />}
+                onClick={() => setEnrollOpen(true)}
+              >
+                Enroll Device
               </Button>
               <FormControlLabel
                 control={
@@ -962,6 +1017,48 @@ function DeviceGrid() {
             color="error"
           >
             Delete Device
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Enrollment Dialog */}
+      <Dialog open={enrollOpen} keepMounted onClose={() => !enrollLoading && setEnrollOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Enroll New Device</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            Enter the IP address of the Android device to enroll. Make sure ADB is enabled on the device and it's connected to the network.
+          </Typography>
+          <TextField
+            label="Device IP Address"
+            value={enrollIp}
+            onChange={(e) => setEnrollIp(e.target.value)}
+            fullWidth
+            margin="normal"
+            placeholder="192.168.1.13"
+            helperText="Example: 192.168.1.13"
+            disabled={enrollLoading}
+            autoFocus
+          />
+          {enrollLoading && (
+            <Box display="flex" flexDirection="column" alignItems="center" mt={3} mb={2}>
+              <CircularProgress size={40} />
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 2 }}>
+                Enrolling device... This may take a few minutes.
+              </Typography>
+              <Typography variant="caption" color="text.secondary" sx={{ mt: 1 }}>
+                The device will reboot automatically when enrollment is complete.
+              </Typography>
+            </Box>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setEnrollOpen(false)} disabled={enrollLoading}>Cancel</Button>
+          <Button 
+            onClick={handleEnrollDevice} 
+            variant="contained"
+            disabled={!enrollIp.trim() || enrollLoading}
+          >
+            {enrollLoading ? 'Enrolling...' : 'Enroll Device'}
           </Button>
         </DialogActions>
       </Dialog>

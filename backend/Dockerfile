@@ -1,5 +1,9 @@
 FROM node:20-alpine
 WORKDIR /app
+
+# Install ADB for device enrollment
+RUN apk add --no-cache android-tools
+
 COPY package*.json ./
 RUN npm install
 COPY . .

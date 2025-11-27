@@ -39,6 +39,7 @@ router.post('/:id/clear-update-flag', devicesRouter);
 
 // Dashboard management endpoints (REQUIRE AUTH)
 // These come AFTER specific routes to avoid conflicts
+router.post('/enroll', authenticateToken, devicesRouter); // Enroll new device via ADB
 router.post('/:id/screenshot', authenticateToken, devicesRouter); // Dashboard requests screenshot from device
 router.get('/', authenticateToken, devicesRouter); // List all devices
 router.get('/:id', authenticateToken, devicesRouter); // Get single device details

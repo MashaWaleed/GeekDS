@@ -1066,4 +1066,138 @@ router.get('/apk/latest', (req, res) => {
   }
 });
 
+// Enroll a new device using the enrollment script
+router.post('/enroll', async (req, res) => {
+  const { ip } = req.body;
+
+  if (!ip || !/^(\d{1,3}\.){3}\d{1,3}$/.test(ip)) {
+    return res.status(400).json({ error: 'Valid IP address is required' });
+  }
+
+  try {
+    const { spawn } = require('child_process');
+    const enrollmentDir = path.join(__dirname, '..', 'enrollment');
+
+    // Check if enrollment files exist
+    const requiredFiles = ['app-debug.apk', 'script.sh', 'update.sh', 'startapp.rc', 'updater.rc'];
+    for (const file of requiredFiles) {
+      if (!fs.existsSync(path.join(enrollmentDir, file))) {
+        return res.status(500).json({ error: `Missing enrollment file: ${file}` });
+      }
+    }
+
+    console.log(`[Enrollment] Starting enrollment for device at ${ip}:3222`);
+
+    let output = '';
+    let errorOutput = '';
+
+    // Function to run a command and collect output
+    const runCommand = (command: string, args: string[]): Promise<{ code: number, stdout: string, stderr: string }> => {
+      return new Promise((resolve) => {
+        const proc = spawn(command, args, { cwd: enrollmentDir });
+        let stdout = '';
+        let stderr = '';
+
+        proc.stdout.on('data', (data: Buffer) => {
+          const msg = data.toString();
+          stdout += msg;
+          console.log(`[Enrollment] ${msg.trim()}`);
+        });
+
+        proc.stderr.on('data', (data: Buffer) => {
+          const msg = data.toString();
+          stderr += msg;
+          console.error(`[Enrollment stderr] ${msg.trim()}`);
+        });
+
+        proc.on('close', (code: number | null) => {
+          resolve({ code: code || 0, stdout, stderr });
+        });
+      });
+    };
+
+    // Execute enrollment steps
+    console.log('[Enrollment] Step 1: Disconnecting existing ADB connections');
+    await runCommand('adb', ['disconnect']);
+
+    console.log(`[Enrollment] Step 2: Connecting to ${ip}:3222`);
+    let result = await runCommand('adb', ['connect', `${ip}:3222`]);
+    output += result.stdout;
+    if (result.code !== 0 && !result.stdout.includes('connected')) {
+      return res.status(500).json({ error: 'Failed to connect via ADB', output: result.stderr });
+    }
+
+    console.log('[Enrollment] Step 3: Getting root access');
+    await runCommand('adb', ['root']);
+    await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds for root
+
+    console.log('[Enrollment] Step 4: Reconnecting after root');
+    await runCommand('adb', ['disconnect']);
+    result = await runCommand('adb', ['connect', `${ip}:3222`]);
+    output += result.stdout;
+
+    console.log('[Enrollment] Step 5: Remounting system partition');
+    result = await runCommand('adb', ['remount']);
+    output += result.stdout;
+
+    console.log('[Enrollment] Step 6: Installing APK');
+    result = await runCommand('adb', ['install', 'app-debug.apk']);
+    output += result.stdout;
+    if (result.code !== 0 && !result.stdout.includes('Success')) {
+      errorOutput += `APK installation warning: ${result.stderr}\n`;
+    }
+
+    console.log('[Enrollment] Step 7: Pushing script.sh');
+    result = await runCommand('adb', ['push', 'script.sh', '/system/bin/script.sh']);
+    output += result.stdout;
+    await runCommand('adb', ['shell', 'chmod', '+x', '/system/bin/script.sh']);
+
+    console.log('[Enrollment] Step 8: Pushing startapp.rc');
+    result = await runCommand('adb', ['push', 'startapp.rc', '/system/etc/init']);
+    output += result.stdout;
+    await runCommand('adb', ['shell', 'chmod', '644', '/system/etc/init/startapp.rc']);
+
+    console.log('[Enrollment] Step 9: Pushing updater.rc');
+    result = await runCommand('adb', ['push', 'updater.rc', '/system/etc/init']);
+    output += result.stdout;
+    await runCommand('adb', ['shell', 'chmod', '644', '/system/etc/init/updater.rc']);
+
+    console.log('[Enrollment] Step 10: Pushing update.sh');
+    result = await runCommand('adb', ['push', 'update.sh', '/system/bin']);
+    output += result.stdout;
+    await runCommand('adb', ['shell', 'chmod', '+x', '/system/bin/update.sh']);
+
+    // Check if boot.mp4 exists and push it
+    if (fs.existsSync(path.join(enrollmentDir, 'boot.mp4'))) {
+      console.log('[Enrollment] Step 11: Pushing boot.mp4');
+      result = await runCommand('adb', ['push', 'boot.mp4', '/system/media']);
+      output += result.stdout;
+      await runCommand('adb', ['shell', 'chmod', '644', '/system/media/boot.mp4']);
+    }
+
+    // Check if logo.img exists and flash it
+    if (fs.existsSync(path.join(enrollmentDir, 'logo.img'))) {
+      console.log('[Enrollment] Step 12: Pushing and flashing logo.img');
+      result = await runCommand('adb', ['push', 'logo.img', '/sdcard']);
+      output += result.stdout;
+      await runCommand('adb', ['shell', 'dd', 'if=/sdcard/logo.img', 'of=/dev/block/by-name/logo']);
+    }
+
+    console.log('[Enrollment] Step 13: Rebooting device');
+    result = await runCommand('adb', ['reboot']);
+    output += result.stdout;
+
+    console.log(`[Enrollment] Successfully enrolled device at ${ip}`);
+    return res.json({ 
+      success: true, 
+      message: `Device at ${ip} enrolled successfully. The device is rebooting.`,
+      output: output
+    });
+
+  } catch (error) {
+    console.error('Error during enrollment:', error);
+    return res.status(500).json({ error: 'Failed to enroll device', details: error instanceof Error ? error.message : 'Unknown error' });
+  }
+});
+
 export default router;
