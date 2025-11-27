@@ -8,9 +8,11 @@ ip=${QUERY_STRING%%&*}
 ip=${ip##*=}
 QUERY_SRTING=${QUERY_STRING#*&}
 other=${QUERY_STRING##*=}
-adb kill-server
+adb disconnect
 adb connect ${ip}:3222
 adb root
+adb disconnect
+adb connect ${ip}:3222
 adb remount
 adb install app-debug.apk
 adb push script.sh /system/bin/script.sh
