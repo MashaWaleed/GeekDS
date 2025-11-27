@@ -1,0 +1,9 @@
+service monitor_app /system/bin/script.sh
+    class main
+    user root
+    group root
+    seclabel u:r:init:s0
+    restart
+
+on property:sys.boot_completed=1
+    start monitor_app
