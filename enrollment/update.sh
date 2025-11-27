@@ -7,8 +7,11 @@
 # version
 #
 ################
+logger(){
+	log -t 'GeekUpdater' "$1"
+}
 while true; do
-	response="$(busybox wget -o /dev/null -O - 127.0.0.1/update.json)"
+	response="$(busybox wget -o /dev/null -O - 192.168.1.254/api/devices/apk/version)"
 	del=$'\n\t{}'
 	response="${response//[$del]/}" #del newlines, tabs and { , }
 	response="${response//  / }" #squeeze all spaces
@@ -24,10 +27,12 @@ while true; do
 
 		declare -- "${index}"="${val//\"*/}"
 	done <<< "${response}" 
+	logger "Server reports: $version"
 	#echo "${response}"
 	#echo "$version" "$size" "$size_bytes" "${last_modified}"
 	current="$(dumpsys package com.example.geekds | grep 'versionName')"
-	current="${current##*=}"
-	[[ "$current" < "$version" ]] && wget -O /data/app.apk 127.0.0.1:80/app.apk && pm install /data/app.apk
+	current="${current##*=}" 
+	logger "Current Version : $current"
+	[[ "$current" < "$version" ]] && logger "$(wget -O /data/app.apk 192.168.1.254/api/devices/apk/latest 2>&1)" && logger "$(pm install /data/app.apk 2>&1)"
 	sleep 3600s
 done
