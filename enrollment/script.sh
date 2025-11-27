@@ -1,11 +1,9 @@
 #!/system/bin/sh
-dumpsys deviceidle whitelist +com.example.geekds
+
 while true ; do
 	cond=$(dumpsys activity activities | grep topResumedActivity=  | awk '{ print $3}')
-	[ "${cond}" = "com.example.geekds/.MainActivity}" ] && echo "running!" || { am force-stop com.example.geekds;am start com.example.geekds/.MainActivity;}
-	sleep 15s
+	dumpsys window windows | grep -E 'mCurrentFocus' | grep 'com.example.geekds'
+	#[ "${cond}" = "com.example.geekds/.MainActivity}" ] && echo "running!" 
+	[ "$?" -eq 0 ] || { am force-stop com.example.geekds;am start com.example.geekds/.MainActivity;}
+	sleep 20s
 done
-
-    
-     
-
