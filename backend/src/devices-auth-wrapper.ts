@@ -14,6 +14,10 @@ router.get('/check-registration/:ip', devicesRouter);
 router.get('/check-registration/by-uuid/:uuid', devicesRouter);
 router.post('/claim', devicesRouter);
 
+// APK download for app updates (NO AUTH - devices need this)
+router.get('/apk/latest', devicesRouter);
+router.get('/apk/version', devicesRouter);
+
 // Schedule & playlist fetching (devices need this - NO AUTH)
 router.get('/:id/schedule', devicesRouter);
 router.get('/:id/schedules/all', devicesRouter);
@@ -29,6 +33,9 @@ router.get('/:id/screenshot/status', devicesRouter); // Check if screenshot exis
 // Heartbeat (NO AUTH)
 router.patch('/:id/heartbeat', devicesRouter);
 router.patch('/:id', devicesRouter); // Legacy heartbeat
+
+// Clear update flag after successful update (NO AUTH - devices need this)
+router.post('/:id/clear-update-flag', devicesRouter);
 
 // Dashboard management endpoints (REQUIRE AUTH)
 // These come AFTER specific routes to avoid conflicts

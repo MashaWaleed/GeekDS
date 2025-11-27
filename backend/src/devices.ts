@@ -243,23 +243,32 @@ router.get('/:id', async (req, res) => {
 // Update device (for dashboard edits)
 router.put('/:id', async (req, res) => {
   const { id } = req.params;
-  const { name, ip } = req.body;
+  const { name, ip, update_requested } = req.body;
 
   if (!name || !name.trim()) {
     return res.status(400).json({ error: 'Device name is required' });
   }
 
   try {
-    const result = await pool.query(
-      'UPDATE devices SET name = $1, ip = $2 WHERE id = $3 RETURNING *',
-      [name.trim(), ip, id]
-    );
+    // Build dynamic query to handle optional update_requested
+    let query = 'UPDATE devices SET name = $1, ip = $2';
+    let params: any[] = [name.trim(), ip];
+    
+    if (update_requested !== undefined) {
+      query += ', update_requested = $3';
+      params.push(update_requested);
+    }
+    
+    query += ' WHERE id = $' + (params.length + 1) + ' RETURNING *';
+    params.push(id);
+
+    const result = await pool.query(query, params);
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Device not found' });
     }
 
-    console.log(`Device updated: ${name} (ID: ${id})`);
+    console.log(`Device updated: ${name} (ID: ${id})${update_requested !== undefined ? `, update_requested=${update_requested}` : ''}`);
     // Invalidate related caches: devices list, specific devices, schedules (device_name joined)
     await invalidateCache(CACHE_KEYS.DEVICES + '*');
     await invalidateCache('device:*');
@@ -341,14 +350,16 @@ router.patch('/:id', async (req, res) => {
 // Body: {
 //   playback_state: 'playing' | 'standby',
 //   versions: { schedule: number, playlist: number, commands_cursor: number },
-//   name?: string, ip?: string, uuid?: string
+//   name?: string, ip?: string, uuid?: string, app_version?: string
+//   NOTE: update_requested is NOT accepted from client (server-controlled only)
 // }
 // Response: {
 //   schedule_changed: boolean,
 //   playlist_changed: boolean,
 //   new_versions: { schedule: number, playlist: number },
 //   active_playlist_id: number|null,
-//   commands: [{ id, type, request_id? }]
+//   commands: [{ id, type, request_id? }],
+//   update_requested: boolean  // Server tells client to update
 // }
 // In-memory last version/cache (volatile, improves disappearance detection without schema change)
 const lastDeviceVersions: Record<string, { scheduleVersion: number; playlistVersion: number; hadActive: boolean; allSchedulesVersion: number }> = {};
@@ -384,7 +395,9 @@ router.patch('/:id/heartbeat', async (req, res) => {
     versions = {},
     name,
     ip,
-    uuid
+    uuid,
+    app_version
+    // NOTE: update_requested is NOT accepted from client - it's server-controlled only
   } = req.body || {};
 
   try {
@@ -478,11 +491,16 @@ router.patch('/:id/heartbeat', async (req, res) => {
         activePlaylistName = row.playlist_name;
       }
 
-      // Check ALL schedules version to detect edits to inactive schedules
+      // Check ALL schedules version to detect edits to ANY schedule OR its playlist
+      // This catches changes to inactive schedules' playlist content!
       const allSchedulesQuery = await pool.query(
-        `SELECT MAX(EXTRACT(EPOCH FROM updated_at)*1000) AS max_version
-         FROM schedules
-         WHERE device_id = $1 AND is_enabled = true`,
+        `SELECT MAX(GREATEST(
+           EXTRACT(EPOCH FROM s.updated_at)*1000,
+           EXTRACT(EPOCH FROM p.updated_at)*1000
+         )) AS max_version
+         FROM schedules s
+         JOIN playlists p ON p.id = s.playlist_id
+         WHERE s.device_id = $1`,
         [id]
       );
       allSchedulesVersion = Math.floor(allSchedulesQuery.rows[0]?.max_version || 0);
@@ -521,14 +539,35 @@ router.patch('/:id/heartbeat', async (req, res) => {
     pendingPingUpdates.set(id, { current_media: currentMediaStatus, timestamp: Date.now() });
 
     // Update metadata fields immediately if provided (ignore name to prevent overwrite)
-    if (ip || uuid) {
+    // NOTE: update_requested is NEVER updated from client - it's server-controlled only
+    if (ip || uuid || app_version) {
+      // First, get the current app version to detect if it changed
+      const currentDevice = await pool.query(
+        'SELECT app_version, update_requested FROM devices WHERE id = $1',
+        [id]
+      );
+      
+      const oldVersion = currentDevice.rows[0]?.app_version;
+      const wasUpdateRequested = currentDevice.rows[0]?.update_requested || false;
+      
+      // Update the device metadata
       await pool.query(
         `UPDATE devices
          SET ip = COALESCE($1, ip),
-             uuid = COALESCE($2, uuid)
-         WHERE id = $3`,
-        [ip || null, uuid || null, id]
+             uuid = COALESCE($2, uuid),
+             app_version = COALESCE($3, app_version)
+         WHERE id = $4`,
+        [ip || null, uuid || null, app_version || null, id]
       );
+      
+      // If app_version changed and update was requested, auto-clear the flag
+      if (app_version && oldVersion && app_version !== oldVersion && wasUpdateRequested) {
+        await pool.query(
+          'UPDATE devices SET update_requested = false WHERE id = $1',
+          [id]
+        );
+        console.log(`[Heartbeat] Device ${id} updated from v${oldVersion} to v${app_version} - clearing update_requested flag`);
+      }
     }
 
     // 3. Pull pending screenshot requests (acts as commands queue)
@@ -550,12 +589,20 @@ router.patch('/:id/heartbeat', async (req, res) => {
       commands.push({ id: reqId, type: 'screenshot_request', request_id: reqId });
     }
 
+    // Get current device state to return update_requested flag
+    const deviceState = await pool.query(
+      'SELECT update_requested FROM devices WHERE id = $1',
+      [id]
+    );
+    const updateRequested = deviceState.rows[0]?.update_requested || false;
+
     return res.json({
       schedule_changed: scheduleChanged,
       playlist_changed: playlistChanged,
       new_versions: { schedule: scheduleVersion, playlist: playlistVersion, all_schedules: allSchedulesVersion },
       active_playlist_id: activePlaylistId,
-      commands
+      commands,
+      update_requested: updateRequested
     });
   } catch (error) {
     console.error('Merged heartbeat error:', error);
@@ -569,10 +616,12 @@ router.get('/:id/schedules/all', async (req, res) => {
   try {
     const q = await pool.query(
       `SELECT s.*, 
-              EXTRACT(EPOCH FROM s.updated_at)*1000 AS schedule_version_ms
+              p.updated_at as playlist_updated_at,
+              EXTRACT(EPOCH FROM s.updated_at)*1000 AS schedule_version_ms,
+              EXTRACT(EPOCH FROM p.updated_at)*1000 AS playlist_version_ms
        FROM schedules s
+       JOIN playlists p ON p.id = s.playlist_id
        WHERE s.device_id = $1
-         AND s.is_enabled = true
        ORDER BY s.time_slot_start`,
       [id]
     );
@@ -587,19 +636,23 @@ router.get('/:id/schedules/all', async (req, res) => {
       valid_from: row.valid_from,
       valid_until: row.valid_until,
       is_enabled: row.is_enabled,
-      version: Math.floor(row.schedule_version_ms) || 0
+      version: Math.floor(row.schedule_version_ms) || 0,
+      playlist_version: Math.floor(row.playlist_version_ms) || 0
     }));
 
-    // Calculate aggregate version: MAX of all schedule updated_at timestamps
-    // This matches the heartbeat calculation (MAX version) for consistency
-    const aggregateVersion = schedules.length > 0 
-      ? Math.max(...schedules.map(s => s.version))
+    // Calculate aggregate version: MAX of BOTH schedule AND playlist versions
+    // This ensures version changes when:
+    // - ANY schedule is edited/disabled/enabled (schedule.updated_at)
+    // - ANY playlist content is changed (playlist.updated_at)
+    const allVersions = schedules.flatMap(s => [s.version, s.playlist_version]);
+    const aggregateVersion = allVersions.length > 0 
+      ? Math.max(...allVersions)
       : 0;
 
     return res.json({
       schedules,
       count: schedules.length,
-      version: aggregateVersion  // Aggregate version changes when ANY schedule changes
+      version: aggregateVersion  // Aggregate version includes BOTH schedule AND playlist changes!
     });
   } catch (error) {
     console.error('Fetch all schedules error:', error);
@@ -608,64 +661,21 @@ router.get('/:id/schedules/all', async (req, res) => {
 });
 
 // NEW: Device-specific schedule endpoint returns current active schedule snapshot & versions
+// DEPRECATED: Single schedule endpoint removed - use /schedules/all instead
+// This endpoint is no longer used by Android clients (they use /schedules/all)
+// Kept as no-op for backward compatibility during migration
 router.get('/:id/schedule', async (req, res) => {
-  const { id } = req.params;
-  try {
-    const now = new Date();
-    const day = now.toLocaleDateString('en-GB', { weekday: 'long' }).toLowerCase();
-    const timeStr = now.toISOString().substring(11,16); // HH:mm
-    const q = await pool.query(
-      `SELECT s.*, p.updated_at as playlist_updated_at, p.id as pl_id,
-              EXTRACT(EPOCH FROM s.updated_at)*1000 AS schedule_version_ms,
-              EXTRACT(EPOCH FROM p.updated_at)*1000 AS playlist_version_ms
-       FROM schedules s
-       JOIN playlists p ON p.id = s.playlist_id
-       WHERE s.device_id = $1
-         AND s.is_enabled = true
-         AND (s.valid_from IS NULL OR s.valid_from <= CURRENT_DATE)
-         AND (s.valid_until IS NULL OR s.valid_until >= CURRENT_DATE)
-         AND $2 = ANY (s.days_of_week)
-         AND s.time_slot_start <= $3::time
-         AND s.time_slot_end >= $3::time
-       ORDER BY s.time_slot_start
-       LIMIT 1`,
-      [id, day, timeStr]
-    );
-
-    if (q.rows.length === 0) {
-      return res.json({
-        version: 0,
-        playlist_version: 0,
-        schedule: null
-      });
-    }
-
-    const row = q.rows[0];
-    const schedule = {
-      playlist_id: row.playlist_id,
-      name: row.name,
-      days_of_week: row.days_of_week,
-      time_slot_start: row.time_slot_start,
-      time_slot_end: row.time_slot_end,
-      valid_from: row.valid_from,
-      valid_until: row.valid_until,
-      is_enabled: row.is_enabled
-    };
-    return res.json({
-      version: Math.floor(row.schedule_version_ms) || 0,
-      playlist_version: Math.floor(row.playlist_version_ms) || 0,
-      schedule
-    });
-  } catch (error) {
-    console.error('Device schedule fetch error:', error);
-    return res.status(500).json({ error: 'Failed to fetch device schedule' });
-  }
+  console.warn('DEPRECATED: /schedule endpoint called - use /schedules/all instead');
+  return res.status(410).json({ 
+    error: 'This endpoint is deprecated. Use GET /api/devices/:id/schedules/all instead',
+    migration_guide: 'The Android client now uses multi-schedule caching. Update your client to use /schedules/all endpoint.'
+  });
 });
 
 // NEW: Request screenshot from device (HTTP polling approach with completion waiting)
 router.post('/:id/screenshot', async (req, res) => {
   const { id } = req.params;
-  const timeout = 15000; // 15 seconds timeout
+  const timeout = 60000; // 60 seconds timeout (increased for slow MediaMetadataRetriever)
 
   try {
     // Check if device exists and is online
@@ -734,7 +744,7 @@ router.post('/:id/screenshot', async (req, res) => {
 
     return res.status(408).json({
       error: 'Screenshot request timed out',
-      message: 'Device did not respond within 15 seconds',
+      message: 'Device did not respond within 60 seconds',
       request_id: requestId
     });
 
@@ -972,6 +982,87 @@ router.post('/claim', async (req, res) => {
   } catch (error) {
     console.error('Error claiming device by uuid:', error);
     return res.status(500).json({ error: 'Failed to claim device' });
+  }
+});
+
+// Clear update_requested flag after successful update (device endpoint, no auth)
+router.post('/:id/clear-update-flag', async (req, res) => {
+  const { id } = req.params;
+  
+  try {
+    const result = await pool.query(
+      'UPDATE devices SET update_requested = false WHERE id = $1 RETURNING id, name, update_requested',
+      [id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Device not found' });
+    }
+    
+    console.log(`[Update] Device ${id} (${result.rows[0].name}) cleared update_requested flag`);
+    return res.json({ success: true, device: result.rows[0] });
+  } catch (error) {
+    console.error('Error clearing update flag:', error);
+    return res.status(500).json({ error: 'Failed to clear update flag' });
+  }
+});
+
+// Get APK version info
+router.get('/apk/version', (req, res) => {
+  try {
+    const apkPath = path.join(__dirname, '..', 'apk', 'app-debug.apk');
+    const versionPath = path.join(__dirname, '..', 'apk', 'version.txt');
+    
+    if (!fs.existsSync(apkPath)) {
+      return res.status(404).json({ error: 'No APK available', version: null });
+    }
+    
+    const stat = fs.statSync(apkPath);
+    const sizeInMB = (stat.size / 1024 / 1024).toFixed(2);
+    const lastModified = stat.mtime.toISOString();
+    
+    // Read version from version.txt file
+    let version = 'unknown';
+    if (fs.existsSync(versionPath)) {
+      version = fs.readFileSync(versionPath, 'utf-8').trim();
+    }
+    
+    return res.json({
+      version: version,
+      size: `${sizeInMB}MB`,
+      size_bytes: stat.size,
+      last_modified: lastModified
+    });
+  } catch (error) {
+    console.error('Error getting APK version:', error);
+    return res.status(500).json({ error: 'Failed to get APK version' });
+  }
+});
+
+// Serve APK file for app updates
+router.get('/apk/latest', (req, res) => {
+  try {
+    // APK is stored in backend/apk/ directory
+    const apkPath = path.join(__dirname, '..', 'apk', 'app-debug.apk');
+    
+    if (!fs.existsSync(apkPath)) {
+      console.error('APK file not found at:', apkPath);
+      return res.status(404).json({ error: 'No APK available for download' });
+    }
+    
+    const stat = fs.statSync(apkPath);
+    
+    res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+    res.setHeader('Content-Length', stat.size);
+    res.setHeader('Content-Disposition', 'attachment; filename=GeekDS.apk');
+    
+    const fileStream = fs.createReadStream(apkPath);
+    fileStream.pipe(res);
+    
+    console.log(`[APK] Download initiated - Size: ${(stat.size / 1024 / 1024).toFixed(2)}MB`);
+  } catch (error) {
+    console.error('Error serving APK:', error);
+    res.status(500).json({ error: 'Failed to serve APK file' });
   }
 });
 

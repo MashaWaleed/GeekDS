@@ -39,6 +39,7 @@ services:
     restart: always
     volumes:
       - ./media:/app/media
+      - ./backend/apk:/app/apk
       - uploads:/app/uploads
       - screenshots:/app/screenshots
     environment:

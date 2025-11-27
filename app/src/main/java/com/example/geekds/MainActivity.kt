@@ -20,6 +20,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStream
@@ -57,12 +58,15 @@ import android.net.NetworkRequest
 import android.os.PowerManager
 import android.provider.Settings
 import java.util.concurrent.TimeUnit
+import android.content.pm.PackageManager
+import androidx.core.content.FileProvider
 
 class MainActivity : Activity() {
     private var deviceName: String = "ARC-A-GR-18" // Default fallback
-    private var cmsUrl: String = "http://192.168.1.10:5000" // Default fallback
+    private var cmsUrl: String = "http://192.168.1.11:5000" // Default fallback
     private var deviceId: Int? = null
     private var deviceUuid: String? = null
+    private var appVersion: String = "unknown" // App version from build.gradle
 
     // Enhanced OkHttpClient with longer timeouts and retry
     private val client = OkHttpClient.Builder()
@@ -194,6 +198,16 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Get app version from PackageManager
+        try {
+            val packageInfo = packageManager.getPackageInfo(packageName, 0)
+            appVersion = packageInfo.versionName ?: "unknown"
+            Log.i("GeekDS", "App version: $appVersion")
+        } catch (e: PackageManager.NameNotFoundException) {
+            Log.e("GeekDS", "Could not get app version", e)
+            appVersion = "unknown"
+        }
 
         // Load external configuration FIRST
         loadExternalConfig()?.let { config ->
@@ -705,6 +719,7 @@ class MainActivity : Activity() {
             put("name", deviceName)
             put("ip", ip)
             put("uuid", deviceUuid ?: "")
+            put("app_version", appVersion) // Send app version to backend
         }
         val req = Request.Builder()
             .url("$cmsUrl/api/devices/$id/heartbeat")
@@ -730,6 +745,17 @@ class MainActivity : Activity() {
                 try {
                     val txt = response.body?.string()
                     val json = JSONObject(txt ?: "{}")
+                    
+                    // ✨ CHECK FOR UPDATE REQUEST FIRST - highest priority
+                    val updateRequested = json.optBoolean("update_requested", false)
+                    if (updateRequested) {
+                        Log.w("GeekDS", "*** UPDATE REQUESTED BY SERVER ***")
+                        runOnUiThread {
+                            initiateAppUpdate()
+                        }
+                        return // Don't process rest of heartbeat - update takes priority
+                    }
+                    
                     val newVersions = json.optJSONObject("new_versions")
                     if (newVersions != null) {
                         lastKnownScheduleVersion = newVersions.optLong("schedule", lastKnownScheduleVersion)
@@ -809,7 +835,7 @@ class MainActivity : Activity() {
     private fun fetchDeviceSchedule() {
         val id = deviceId ?: return
 
-        // FIRST: Fetch ALL schedules for offline caching
+        // Fetch ALL schedules - this is the ONLY source of truth
         val allSchedulesReq = Request.Builder()
             .url("$cmsUrl/api/devices/$id/schedules/all")
             .get()
@@ -823,6 +849,8 @@ class MainActivity : Activity() {
                 if (cachedSchedules != null && cachedSchedules.isNotEmpty()) {
                     Log.i("GeekDS", "Using ${cachedSchedules.size} cached schedules (OFFLINE MODE)")
                     enforceScheduleWithMultiple(cachedSchedules)
+                } else {
+                    Log.w("GeekDS", "No cached schedules available for offline mode")
                 }
             }
 
@@ -868,12 +896,12 @@ class MainActivity : Activity() {
                     }
 
                     if (schedules.isNotEmpty()) {
-                        // Update version tracking BEFORE caching
-                        lastAllSchedulesVersion = serverVersion
-
-                        // Cache ALL schedules for offline operation
+                        // Cache schedules FIRST (in case version update fails)
                         saveAllSchedules(this@MainActivity, schedules)
                         Log.i("GeekDS", "Cached ${schedules.size} schedules (version $serverVersion) for offline switching")
+                        
+                        // Update version tracking AFTER successful caching
+                        lastAllSchedulesVersion = serverVersion
 
                         // Pre-download all playlists for offline use
                         schedules.forEach { schedule ->
@@ -883,53 +911,14 @@ class MainActivity : Activity() {
                         // Apply current schedule immediately
                         enforceScheduleWithMultiple(schedules)
                     } else {
-                        Log.i("GeekDS", "No schedules assigned to this device")
-                        clearLocalData()
+                        // NO SCHEDULES - completely clear cache
+                        Log.i("GeekDS", "No schedules assigned to this device - clearing all cache")
+                        clearAllScheduleData()
                         runOnUiThread { stopCurrentPlayback() }
                     }
 
                 } catch (e: Exception) {
                     Log.e("GeekDS", "Error parsing all schedules", e)
-                }
-            }
-        })
-
-        // SECOND: Also fetch the currently active schedule for immediate playback
-        val req = Request.Builder().url("$cmsUrl/api/devices/$id/schedule").get().build()
-        client.newCall(req).enqueue(object: Callback {
-            override fun onFailure(call: Call, e: IOException) {
-                Log.e("GeekDS", "fetchDeviceSchedule failed: ${e.message}")
-            }
-            override fun onResponse(call: Call, response: Response) {
-                if (!response.isSuccessful) return
-                try {
-                    val txt = response.body?.string()
-                    val json = JSONObject(txt ?: "{}")
-                    lastKnownScheduleVersion = json.optLong("version", lastKnownScheduleVersion)
-                    lastKnownPlaylistVersion = json.optLong("playlist_version", lastKnownPlaylistVersion)
-                    val sched = json.optJSONObject("schedule")
-                    if (sched == null) {
-                        // No active schedule now – clear local persisted schedule & stop playback
-                        Log.i("GeekDS", "Server reports no active schedule; clearing local schedule")
-                        clearLocalData()
-                        runOnUiThread { stopCurrentPlayback() }
-                        return
-                    }
-                    val schedule = Schedule(
-                        playlistId = sched.getInt("playlist_id"),
-                        name = sched.optString("name", null),
-                        daysOfWeek = sched.getJSONArray("days_of_week").let { a -> (0 until a.length()).map { a.getString(it) } },
-                        timeSlotStart = sched.getString("time_slot_start"),
-                        timeSlotEnd = sched.getString("time_slot_end"),
-                        validFrom = sched.optString("valid_from", null),
-                        validUntil = sched.optString("valid_until", null),
-                        isEnabled = sched.getBoolean("is_enabled")
-                    )
-                    saveSchedule(this@MainActivity, schedule)
-                    currentPlaylistId = schedule.playlistId
-                    fetchPlaylist(schedule.playlistId)
-                } catch (e: Exception) {
-                    Log.e("GeekDS", "Error processing device schedule", e)
                 }
             }
         })
@@ -1518,21 +1507,47 @@ class MainActivity : Activity() {
         })
     }
 
-    private fun clearLocalData() {
+    // NEW: Properly clear ALL schedule-related cache (when NO schedules exist)
+    private fun clearAllScheduleData() {
+        Log.i("GeekDS", "Clearing ALL schedule and playlist cache")
+        
         val prefs = getSharedPreferences("geekds_prefs", MODE_PRIVATE)
-        prefs.edit()
-            .remove("schedule")
-            .remove("playlist")
-            .remove("all_schedules")  // CRITICAL: Clear cached schedules too!
-            .apply()
+        val editor = prefs.edit()
+        
+        // Clear all schedule-related keys
+        editor.remove("schedule")          // Legacy single schedule (no longer used)
+        editor.remove("all_schedules")     // Current multi-schedule cache
+        editor.remove("playlist")          // Current active playlist
+        
+        // Clear all cached playlists by ID (playlist_1, playlist_2, etc.)
+        val allKeys = prefs.all.keys
+        allKeys.forEach { key ->
+            if (key.startsWith("playlist_")) {
+                editor.remove(key)
+                Log.d("GeekDS", "Removed cached playlist: $key")
+            }
+        }
+        
+        editor.apply()
+        
+        // Reset state variables
         isPlaylistActive = false
         currentPlaylistId = null
         lastScheduleTimestamp = null
         lastPlaylistTimestamp = null
+        
         // Reset version tracking so fresh fetch happens
         lastAllSchedulesVersion = 0L
         lastKnownScheduleVersion = 0L
-        Log.i("GeekDS", "Cleared all local schedule and playlist data")
+        lastKnownPlaylistVersion = 0L
+        
+        Log.i("GeekDS", "Cleared all schedule/playlist cache and reset version tracking")
+    }
+    
+    // DEPRECATED: Use clearAllScheduleData() instead
+    // Kept for compatibility during refactoring
+    private fun clearLocalData() {
+        clearAllScheduleData()
     }
 
 
@@ -1959,14 +1974,17 @@ class MainActivity : Activity() {
         }
         runOnUiThread {
             try {
-                val playerView = PlayerView(this).apply {
-                    useController = false // Hide controls
-                }
+                // Create PlayerView
+                val playerView = PlayerView(this)
+                playerView.useController = false
+                
                 setContentView(playerView)
                 val player = ExoPlayer.Builder(this).build()
-                playerView.player = player
-
-                // Add error listener (Media3)
+                
+                // FORCE switch to TextureView BEFORE assigning player
+                playerView.setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
+                
+                // Hook into player to force TextureView creation
                 player.addListener(object : androidx.media3.common.Player.Listener {
                     override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                         Log.e("GeekDS", "ExoPlayer error: ${error.message}")
@@ -1975,8 +1993,29 @@ class MainActivity : Activity() {
 
                     override fun onPlaybackStateChanged(playbackState: Int) {
                         Log.i("GeekDS", "Playback state changed: $playbackState")
+                        
+                        // When ready, force switch to TextureView
+                        if (playbackState == androidx.media3.common.Player.STATE_READY) {
+                            try {
+                                // Try to swap SurfaceView with TextureView after player is ready
+                                val viewGroup = playerView as? ViewGroup
+                                viewGroup?.let { vg ->
+                                    for (i in 0 until vg.childCount) {
+                                        val child = vg.getChildAt(i)
+                                        if (child is android.view.SurfaceView) {
+                                            Log.d("GeekDS", "Found SurfaceView, attempting to replace with TextureView")
+                                            // Can't easily replace, so store reference for later
+                                        }
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                Log.w("GeekDS", "Failed to inspect PlayerView children: ${e.message}")
+                            }
+                        }
                     }
                 })
+                
+                playerView.player = player
 
                 val mediaItem = MediaItem.fromUri(file.toURI().toString())
                 player.setMediaItem(mediaItem)
@@ -2231,177 +2270,44 @@ class MainActivity : Activity() {
     }
 
     // Enhanced schedule enforcement with new schedule format
+    // Simplified schedule enforcement - ONLY uses all_schedules cache
     private fun enforceSchedule() {
-        // FIRST: Try to use multi-schedule enforcement if we have cached schedules
+        // Load cached schedules (ONLY source of truth)
         val allSchedules = loadAllSchedules(this)
 
-        if (allSchedules != null && allSchedules.isNotEmpty()) {
-            Log.i("GeekDS", "=========================================")
-            Log.i("GeekDS", "ENFORCE: Found ${allSchedules.size} cached schedules, using multi-schedule mode")
-            Log.i("GeekDS", "ENFORCE: isPlaylistActive=$isPlaylistActive, currentPlaylistId=$currentPlaylistId")
-            Log.i("GeekDS", "=========================================")
-            // Use smart multi-schedule enforcement for offline switching
-            enforceScheduleWithMultiple(allSchedules)
-            return
-        } else {
-            Log.w("GeekDS", "enforceSchedule: No cached schedules found (allSchedules=${allSchedules?.size ?: "null"}), falling back to single schedule")
-        }
-
-        // FALLBACK: Use old single-schedule logic
-        val schedule = loadSchedule(this) ?: run {
+        if (allSchedules == null || allSchedules.isEmpty()) {
+            // No schedules cached - this means either:
+            // 1. Fresh install / first run
+            // 2. All schedules were deleted server-side
+            // 3. We're waiting for initial fetch
+            
             // Only log once per minute to avoid spam
             val now = System.currentTimeMillis()
             if (now - lastScheduleLogTime > 60000L) {
-                Log.w("GeekDS", "enforceSchedule: No schedule loaded")
+                Log.w("GeekDS", "No cached schedules found - waiting for server fetch or showing standby")
                 lastScheduleLogTime = now
             }
 
-            // If no schedule, ensure playback is stopped
+            // If playback is active, stop it
             if (isPlaylistActive) {
-                Log.i("GeekDS", "*** STOPPING PLAYBACK *** - no schedule available")
+                Log.i("GeekDS", "*** STOPPING PLAYBACK *** - no schedules available")
                 isPlaylistActive = false
                 currentPlaylistId = null
-                runOnUiThread { showStandby() }
+                runOnUiThread { stopCurrentPlayback() }
             }
             return
         }
 
-        val playlist = loadPlaylist(this) ?: run {
-            // Only log once per minute to avoid spam
-            val now = System.currentTimeMillis()
-            if (now - lastPlaylistLogTime > 60000L) {
-                Log.w("GeekDS", "enforceSchedule: No playlist loaded")
-                lastPlaylistLogTime = now
-            }
+        // We have cached schedules - use multi-schedule enforcement
+        Log.d("GeekDS", "Enforcing schedule with ${allSchedules.size} cached schedules")
+        enforceScheduleWithMultiple(allSchedules)
+    }
 
-            // If no playlist, ensure playback is stopped
-            if (isPlaylistActive) {
-                Log.i("GeekDS", "*** STOPPING PLAYBACK *** - no playlist available")
-                isPlaylistActive = false
-                currentPlaylistId = null
-                runOnUiThread { showStandby() }
-            }
-            return
-        }
-
-        // If schedule is disabled, stop playback and return
-        if (!schedule.isEnabled) {
-            if (isPlaylistActive) {
-                Log.i("GeekDS", "*** STOPPING PLAYBACK *** - schedule is disabled")
-                isPlaylistActive = false
-                currentPlaylistId = null
-                runOnUiThread { showStandby() }
-            }
-            return
-        }
-
-        // Get current time components in UTC
-        val now = ZonedDateTime.now(ZoneId.of("UTC"))
-        val currentDay = now.dayOfWeek.name.lowercase()
-        val currentTime = now.format(DateTimeFormatter.ofPattern("HH:mm"))
-
-        // Check if current day is in schedule
-        if (!schedule.daysOfWeek.contains(currentDay)) {
-            if (isPlaylistActive) {
-                Log.i("GeekDS", "*** STOPPING PLAYBACK *** - not scheduled for today")
-                isPlaylistActive = false
-                currentPlaylistId = null
-                runOnUiThread { showStandby() }
-            }
-            return
-        }
-
-        // Check validity period
-        fun parseValidityDate(isoString: String?): LocalDate? {
-            // Treat null, "null", or blank as no limit (always valid)
-            if (isoString == null || isoString.trim().isEmpty() || isoString.equals("null", ignoreCase = true)) return null
-            return try {
-                // First try parsing as full ISO datetime
-                ZonedDateTime.parse(isoString).toLocalDate()
-            } catch (e: Exception) {
-                try {
-                    // Then try date-only
-                    LocalDate.parse(isoString)
-                } catch (e: Exception) {
-                    Log.e("GeekDS", "Failed to parse validity date: $isoString", e)
-                    null
-                }
-            }
-        }
-
-        val validFromDate = parseValidityDate(schedule.validFrom)
-        val validUntilDate = parseValidityDate(schedule.validUntil)
-
-        if (validFromDate != null && now.toLocalDate().isBefore(validFromDate)) {
-            if (isPlaylistActive) {
-                Log.i("GeekDS", "*** STOPPING PLAYBACK *** - before valid period")
-                isPlaylistActive = false
-                currentPlaylistId = null
-                runOnUiThread { showStandby() }
-            }
-            return
-        }
-        if (validUntilDate != null && now.toLocalDate().isAfter(validUntilDate)) {
-            if (isPlaylistActive) {
-                Log.i("GeekDS", "*** STOPPING PLAYBACK *** - after valid period")
-                isPlaylistActive = false
-                currentPlaylistId = null
-                runOnUiThread { showStandby() }
-            }
-            return
-        }
-
-        // Convert HH:mm time to minutes since midnight for proper comparison
-        fun timeToMinutes(timeStr: String): Int {
-            val parts = timeStr.split(":")
-            if (parts.size < 2) return 0
-            val hours = parts[0].toIntOrNull() ?: 0
-            val minutes = parts[1].toIntOrNull() ?: 0
-            return hours * 60 + minutes // ignore seconds if present
-        }
-
-        val currentMinutes = timeToMinutes(currentTime)
-        val startMinutes = timeToMinutes(schedule.timeSlotStart)
-        val endMinutes = timeToMinutes(schedule.timeSlotEnd)
-        val inTimeSlot = currentMinutes in startMinutes..endMinutes
-
-        // Log status every minute
-        if (now.second == 0) {
-            Log.d("GeekDS", "Schedule check: day=$currentDay, time=$currentTime (${currentMinutes}m)")
-            Log.d("GeekDS", "Time slot: ${schedule.timeSlotStart}-${schedule.timeSlotEnd} (${startMinutes}m-${endMinutes}m)")
-            Log.d("GeekDS", "In time slot: $inTimeSlot")
-        }
-
-        if (inTimeSlot) {
-            // Only start/restart playback if not already active with the same playlist
-            if (!isPlaylistActive) {
-                Log.i("GeekDS", "*** STARTING PLAYBACK *** playlist=${playlist.id}, files=${playlist.mediaFiles.size}")
-                isPlaylistActive = true
-                currentPlaylistId = playlist.id
-                runOnUiThread {
-                    startPlaylistPlayback(playlist)
-                }
-            } else if (currentPlaylistId != playlist.id) {
-                Log.i("GeekDS", "*** SWITCHING PLAYLIST *** from $currentPlaylistId to ${playlist.id}")
-                currentPlaylistId = playlist.id
-                runOnUiThread {
-                    startPlaylistPlayback(playlist)
-                }
-            } else {
-                // Playlist is already active and it's the same playlist - do nothing
-                // This prevents unnecessary restarts during periodic schedule checks
-            }
-        } else {
-            // Outside time slot
-            if (isPlaylistActive) {
-                Log.i("GeekDS", "*** STOPPING PLAYBACK *** - outside time slot")
-                isPlaylistActive = false
-                currentPlaylistId = null
-                runOnUiThread {
-                    showStandby()
-                }
-            }
-        }
+    // DEPRECATED - Single schedule enforcement removed
+    // All logic now handled by enforceScheduleWithMultiple()
+    private fun enforceSchedule_DEPRECATED_OLD_LOGIC() {
+        // This function body has been removed - all logic moved to enforceScheduleWithMultiple()
+        // Kept as stub for reference during migration
     }
 
 
@@ -2745,18 +2651,22 @@ class MainActivity : Activity() {
 
 // Local storage helpers
 
+    // DEPRECATED: Single schedule cache no longer used
+    // Kept for backward compatibility during migration
+    @Deprecated("Use saveAllSchedules() instead", ReplaceWith("saveAllSchedules(context, listOf(schedule))"))
     fun saveSchedule(context: Context, schedule: Schedule) {
-        val prefs = context.getSharedPreferences("geekds_prefs", Context.MODE_PRIVATE)
-        prefs.edit().putString("schedule", Gson().toJson(schedule)).apply()
+        // No-op - single schedule caching is deprecated
+        Log.w("GeekDS", "saveSchedule() is deprecated - ignoring call")
     }
 
+    @Deprecated("Use loadAllSchedules() instead", ReplaceWith("loadAllSchedules(context)?.firstOrNull()"))
     fun loadSchedule(context: Context): Schedule? {
-        val prefs = context.getSharedPreferences("geekds_prefs", Context.MODE_PRIVATE)
-        val json = prefs.getString("schedule", null) ?: return null
-        return Gson().fromJson(json, Schedule::class.java)
+        // No-op - single schedule caching is deprecated
+        Log.w("GeekDS", "loadSchedule() is deprecated - returning null")
+        return null
     }
 
-    // Save all schedules for offline schedule switching
+    // Save all schedules for offline schedule switching (ONLY source of truth)
     fun saveAllSchedules(context: Context, schedules: List<Schedule>) {
         val prefs = context.getSharedPreferences("geekds_prefs", Context.MODE_PRIVATE)
         prefs.edit().putString("all_schedules", Gson().toJson(schedules)).apply()
@@ -2966,50 +2876,207 @@ class MainActivity : Activity() {
         }
     }
 
-    // Method to extract frame from ExoPlayer using current media file
+    // Method to extract frame from ExoPlayer using MediaMetadataRetriever (slow but works)
     private fun tryExtractFrameFromExoPlayer(): Boolean {
         return try {
             val currentPlayer = player ?: return false
             val currentMediaItem = currentPlayer.currentMediaItem ?: return false
-
-            // Get the current media URI
             val mediaUri = currentMediaItem.localConfiguration?.uri
+            
             if (mediaUri == null) {
                 Log.d("GeekDS", "No media URI available for frame extraction")
                 return false
             }
 
-            Log.d("GeekDS", "Attempting frame extraction from media URI: $mediaUri")
+            Log.d("GeekDS", "Extracting full-res frame from: $mediaUri (this will take ~30 seconds)")
 
-            // Use MediaMetadataRetriever to get frame at current position
             val retriever = MediaMetadataRetriever()
-
             retriever.setDataSource(this, mediaUri)
 
-            // Get current playback position in microseconds
             val currentPositionMs = currentPlayer.currentPosition
             val currentPositionUs = currentPositionMs * 1000L
 
-            Log.d("GeekDS", "Extracting frame at position: ${currentPositionMs}ms")
-
-            // Get frame at current position
-            val frameBitmap = retriever.getFrameAtTime(currentPositionUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+            // Get video dimensions
+            val width = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 1920
+            val height = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 1080
+            
+            Log.d("GeekDS", "Video dimensions: ${width}x${height}, extracting frame at position ${currentPositionMs}ms")
+            
+            // Get scaled frame at current position (API 27+)
+            val frameBitmap = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O_MR1) {
+                retriever.getScaledFrameAtTime(
+                    currentPositionUs,
+                    MediaMetadataRetriever.OPTION_CLOSEST,
+                    width,
+                    height
+                )
+            } else {
+                retriever.getFrameAtTime(
+                    currentPositionUs,
+                    MediaMetadataRetriever.OPTION_CLOSEST
+                )
+            }
 
             retriever.release()
 
             if (frameBitmap != null && !frameBitmap.isRecycled && frameBitmap.width > 1 && frameBitmap.height > 1) {
-                Log.d("GeekDS", "SUCCESS: Frame extracted from ExoPlayer media: ${frameBitmap.width}x${frameBitmap.height}")
+                Log.d("GeekDS", "✅ Frame extracted: ${frameBitmap.width}x${frameBitmap.height}")
                 uploadProcessedScreenshot(frameBitmap)
                 return true
             } else {
-                Log.d("GeekDS", "MediaMetadataRetriever returned null or invalid bitmap")
+                Log.d("GeekDS", "Frame extraction returned null or invalid bitmap")
                 return false
             }
 
         } catch (e: Exception) {
-            Log.w("GeekDS", "MediaMetadataRetriever frame extraction failed: ${e.message}")
+            Log.w("GeekDS", "Frame extraction failed: ${e.message}")
             false
         }
+    }
+    
+    // Capture SurfaceView using PixelCopy API (Android 7.0+, full resolution, fast)
+    @androidx.annotation.RequiresApi(android.os.Build.VERSION_CODES.N)
+    private fun captureSurfaceViewWithPixelCopy(surfaceView: SurfaceView): Boolean {
+        return try {
+            val width = surfaceView.width
+            val height = surfaceView.height
+            
+            if (width <= 0 || height <= 0) {
+                Log.w("GeekDS", "SurfaceView has invalid dimensions: ${width}x${height}")
+                return false
+            }
+            
+            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            val surface = surfaceView.holder?.surface
+            
+            if (surface == null || !surface.isValid) {
+                Log.w("GeekDS", "SurfaceView surface is null or invalid")
+                bitmap.recycle()
+                return false
+            }
+            
+            Log.d("GeekDS", "PixelCopy capturing ${width}x${height} from SurfaceView...")
+            
+            // Use a separate thread with longer timeout
+            var copyResult = -1
+            val latch = java.util.concurrent.CountDownLatch(1)
+            
+            // Run on main thread
+            runOnUiThread {
+                try {
+                    val locationOnScreen = IntArray(2)
+                    surfaceView.getLocationOnScreen(locationOnScreen)
+                    
+                    val srcRect = android.graphics.Rect(
+                        locationOnScreen[0],
+                        locationOnScreen[1],
+                        locationOnScreen[0] + width,
+                        locationOnScreen[1] + height
+                    )
+                    
+                    android.view.PixelCopy.request(
+                        surfaceView,
+                        srcRect,
+                        bitmap,
+                        { result ->
+                            copyResult = result
+                            latch.countDown()
+                        },
+                        android.os.Handler(android.os.Looper.getMainLooper())
+                    )
+                } catch (e: Exception) {
+                    Log.e("GeekDS", "PixelCopy request failed: ${e.message}")
+                    latch.countDown()
+                }
+            }
+            
+            // Wait for copy to complete (with longer timeout for video)
+            val completed = latch.await(5, java.util.concurrent.TimeUnit.SECONDS)
+            
+            if (!completed) {
+                Log.e("GeekDS", "PixelCopy timed out after 5 seconds")
+                bitmap.recycle()
+                return false
+            }
+            
+            if (copyResult == android.view.PixelCopy.SUCCESS) {
+                // Check if bitmap is all black (common issue with hardware surfaces)
+                val isBlank = isBitmapBlank(bitmap)
+                if (isBlank) {
+                    Log.w("GeekDS", "PixelCopy produced blank/black image, trying alternative method")
+                    bitmap.recycle()
+                    return false
+                }
+                
+                Log.d("GeekDS", "✅ PixelCopy SUCCESS: ${bitmap.width}x${bitmap.height}")
+                uploadProcessedScreenshot(bitmap)
+                return true
+            } else {
+                Log.e("GeekDS", "PixelCopy failed with result: $copyResult")
+                bitmap.recycle()
+                return false
+            }
+            
+        } catch (e: Exception) {
+            Log.e("GeekDS", "PixelCopy error: ${e.message}", e)
+            false
+        }
+    }
+    
+    // Check if bitmap is completely blank/black
+    private fun isBitmapBlank(bitmap: Bitmap): Boolean {
+        try {
+            // Sample a few pixels to check if all are black/transparent
+            val width = bitmap.width
+            val height = bitmap.height
+            
+            // Check center and corners
+            val samples = listOf(
+                bitmap.getPixel(width / 2, height / 2),
+                bitmap.getPixel(width / 4, height / 4),
+                bitmap.getPixel(3 * width / 4, height / 4),
+                bitmap.getPixel(width / 4, 3 * height / 4),
+                bitmap.getPixel(3 * width / 4, 3 * height / 4)
+            )
+            
+            // If all samples are black or transparent, it's blank
+            return samples.all { pixel ->
+                val alpha = (pixel shr 24) and 0xff
+                val red = (pixel shr 16) and 0xff
+                val green = (pixel shr 8) and 0xff
+                val blue = pixel and 0xff
+                
+                (alpha < 10) || (red < 10 && green < 10 && blue < 10)
+            }
+        } catch (e: Exception) {
+            return false
+        }
+    }
+    
+    private fun findPlayerView(view: View?): View? {
+        if (view == null) return null
+        if (view.javaClass.simpleName == "PlayerView" || view.javaClass.simpleName == "StyledPlayerView") {
+            return view
+        }
+        if (view is ViewGroup) {
+            for (i in 0 until view.childCount) {
+                val result = findPlayerView(view.getChildAt(i))
+                if (result != null) return result
+            }
+        }
+        return null
+    }
+    
+    private fun findSurfaceView(view: View?): View? {
+        if (view == null) return null
+        if (view is SurfaceView) return view
+        if (view is ViewGroup) {
+            for (i in 0 until view.childCount) {
+                val result = findSurfaceView(view.getChildAt(i))
+                if (result != null) return result
+            }
+        }
+        return null
     }
 
     private fun captureViewAsBitmap(view: View): Bitmap? {
@@ -3157,6 +3224,323 @@ class MainActivity : Activity() {
 
         } catch (e: Exception) {
             Log.e("GeekDS", "Error in uploadScreenshot", e)
+        }
+    }
+
+    // ========== APP UPDATE SYSTEM ==========
+    
+    private fun initiateAppUpdate() {
+        Log.i("GeekDS", "=== INITIATING APP UPDATE ===")
+        
+        // Stop all activities immediately
+        isPlaylistActive = false
+        player?.stop()
+        player?.release()
+        player = null
+        
+        // Cancel all background tasks
+        scope.coroutineContext.cancelChildren()
+        scheduleEnforcerJob?.cancel()
+        healthProbeJob?.cancel()
+        
+        // Show update UI
+        showUpdateScreen()
+        
+        // Start download with hardcoded path
+        val apkUrl = "$cmsUrl/api/devices/apk/latest"
+        downloadAndInstallApk(apkUrl)
+    }
+    
+    private fun showUpdateScreen() {
+        runOnUiThread {
+            rootContainer?.removeAllViews()
+            
+            val updateView = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = android.view.Gravity.CENTER
+                setBackgroundColor(Color.parseColor("#1a1a1a"))
+                layoutParams = ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                )
+            }
+            
+            val titleText = TextView(this).apply {
+                text = "Updating GeekDS..."
+                setTextColor(Color.WHITE)
+                textSize = 32f
+                gravity = android.view.Gravity.CENTER
+                setPadding(40, 40, 40, 20)
+            }
+            
+            val statusText = TextView(this).apply {
+                text = "Downloading update from server...\nDo not power off the device."
+                setTextColor(Color.parseColor("#aaaaaa"))
+                textSize = 18f
+                gravity = android.view.Gravity.CENTER
+                setPadding(40, 20, 40, 40)
+            }
+            
+            updateView.addView(titleText)
+            updateView.addView(statusText)
+            
+            rootContainer?.addView(updateView)
+            
+            setState(State.SYNCING, "Downloading app update...")
+        }
+    }
+    
+    private fun downloadAndInstallApk(url: String) {
+        scope.launch(Dispatchers.IO) {
+            try {
+                Log.i("GeekDS", "Downloading APK from: $url")
+                
+                val request = Request.Builder()
+                    .url(url)
+                    .get()
+                    .build()
+                
+                val response = client.newCall(request).execute()
+                
+                if (!response.isSuccessful) {
+                    throw IOException("Failed to download APK: HTTP ${response.code}")
+                }
+                
+                // Save to external files directory
+                val apkFile = File(getExternalFilesDir(null), "GeekDS-update.apk")
+                
+                response.body?.byteStream()?.use { input ->
+                    FileOutputStream(apkFile).use { output ->
+                        val buffer = ByteArray(8192)
+                        var bytesRead: Int
+                        var totalBytes = 0L
+                        
+                        while (input.read(buffer).also { bytesRead = it } != -1) {
+                            output.write(buffer, 0, bytesRead)
+                            totalBytes += bytesRead
+                            
+                            // Log progress every 1MB
+                            if (totalBytes % (1024 * 1024) < 8192) {
+                                Log.d("GeekDS", "Downloaded: ${totalBytes / 1024 / 1024}MB")
+                            }
+                        }
+                    }
+                }
+                
+                Log.i("GeekDS", "APK downloaded successfully: ${apkFile.absolutePath}")
+                Log.i("GeekDS", "File size: ${apkFile.length()} bytes")
+                
+                // Install APK
+                withContext(Dispatchers.Main) {
+                    installApk(apkFile)
+                }
+                
+            } catch (e: Exception) {
+                Log.e("GeekDS", "Failed to download/install APK", e)
+                
+                withContext(Dispatchers.Main) {
+                    AlertDialog.Builder(this@MainActivity)
+                        .setTitle("Update Failed")
+                        .setMessage("Failed to download update: ${e.message}\n\nThe app will continue running with the current version.")
+                        .setPositiveButton("OK") { _, _ ->
+                            // Resume normal operation
+                            startBackgroundTasks()
+                        }
+                        .setCancelable(false)
+                        .show()
+                }
+            }
+        }
+    }
+    
+    private fun installApk(apkFile: File) {
+        try {
+            // Try silent installation using PackageInstaller API (works for system apps)
+            if (trysilentInstall(apkFile)) {
+                Log.i("GeekDS", "Silent installation initiated successfully")
+                return
+            }
+            
+            // Fallback to regular installation if silent install fails
+            Log.w("GeekDS", "Silent install not available, falling back to regular install")
+            installApkRegular(apkFile)
+            
+        } catch (e: Exception) {
+            Log.e("GeekDS", "Failed to install APK", e)
+            AlertDialog.Builder(this)
+                .setTitle("Installation Failed")
+                .setMessage("Could not launch installer: ${e.message}")
+                .setPositiveButton("OK", null)
+                .show()
+        }
+    }
+    
+    private fun installApkRegular(apkFile: File) {
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+                // Android 7.0+ requires FileProvider
+                val apkUri = androidx.core.content.FileProvider.getUriForFile(
+                    this,
+                    "${applicationContext.packageName}.fileprovider",
+                    apkFile
+                )
+                
+                val intent = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(apkUri, "application/vnd.android.package-archive")
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                
+                Log.i("GeekDS", "Launching APK installer (FileProvider)")
+                startActivity(intent)
+                
+            } else {
+                // Android 6.0 and below
+                val intent = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(android.net.Uri.fromFile(apkFile), "application/vnd.android.package-archive")
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                
+                Log.i("GeekDS", "Launching APK installer (legacy)")
+                startActivity(intent)
+            }
+            
+        } catch (e: Exception) {
+            Log.e("GeekDS", "Failed to install APK", e)
+        }
+    }
+    
+    /**
+     * Attempt silent installation using PackageInstaller API
+     * Returns true if silent install was initiated, false if not available
+     */
+    private fun trysilentInstall(apkFile: File): Boolean {
+        return try {
+            Log.i("GeekDS", "Attempting silent installation...")
+            
+            // Check if we have the INSTALL_PACKAGES permission (system apps have this)
+            val hasInstallPermission = packageManager.checkPermission(
+                "android.permission.INSTALL_PACKAGES",
+                packageName
+            ) == PackageManager.PERMISSION_GRANTED
+            
+            Log.i("GeekDS", "INSTALL_PACKAGES permission: ${if (hasInstallPermission) "✅ GRANTED (system app)" else "❌ DENIED"}")
+            
+            val packageInstaller = packageManager.packageInstaller
+            val params = android.content.pm.PackageInstaller.SessionParams(
+                android.content.pm.PackageInstaller.SessionParams.MODE_FULL_INSTALL
+            )
+            params.setAppPackageName(packageName)
+            
+            // For system apps, we can set additional flags
+            if (hasInstallPermission) {
+                // This flag allows replacing an existing package
+                params.setInstallReason(android.content.pm.PackageManager.INSTALL_REASON_DEVICE_SETUP)
+            }
+            
+            // Create install session
+            val sessionId = packageInstaller.createSession(params)
+            Log.i("GeekDS", "Silent installation session created (ID: $sessionId)")
+            
+            val session = packageInstaller.openSession(sessionId)
+            
+            // Write APK to session
+            Log.i("GeekDS", "Writing APK to installation session (${apkFile.length() / 1024 / 1024}MB)...")
+            FileInputStream(apkFile).use { input ->
+                session.openWrite("package", 0, apkFile.length()).use { output ->
+                    input.copyTo(output)
+                    session.fsync(output)
+                }
+            }
+            
+            Log.i("GeekDS", "APK written to session, committing installation...")
+            
+            // Create broadcast receiver for install result
+            val intent = Intent(this, InstallResultReceiver::class.java).apply {
+                action = "com.example.geekds.INSTALL_COMPLETE"
+            }
+            
+            val pendingIntent = android.app.PendingIntent.getBroadcast(
+                this,
+                0,
+                intent,
+                android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_MUTABLE
+            )
+            
+            // Commit the session (this triggers the install)
+            session.commit(pendingIntent.intentSender)
+            session.close()
+            
+            Log.i("GeekDS", "✅ Silent installation committed successfully")
+            Log.i("GeekDS", "System is installing the update, app will restart automatically...")
+            
+            // Clear the update flag immediately
+            clearUpdateFlag()
+            
+            // Kill the app - Android will restart it automatically after install
+            handler.postDelayed({
+                Log.i("GeekDS", "Exiting to allow system to complete installation...")
+                android.os.Process.killProcess(android.os.Process.myPid())
+            }, 2000)
+            
+            true
+        } catch (e: SecurityException) {
+            Log.w("GeekDS", "Silent install failed - missing permissions: ${e.message}")
+            false
+        } catch (e: Exception) {
+            Log.e("GeekDS", "Silent install failed with error: ${e.message}", e)
+            false
+        }
+    }
+    
+    /**
+     * Broadcast receiver for installation results
+     */
+    class InstallResultReceiver : android.content.BroadcastReceiver() {
+        override fun onReceive(context: android.content.Context?, intent: android.content.Intent?) {
+            val status = intent?.getIntExtra(android.content.pm.PackageInstaller.EXTRA_STATUS, -1)
+            val message = intent?.getStringExtra(android.content.pm.PackageInstaller.EXTRA_STATUS_MESSAGE)
+            
+            android.util.Log.i("GeekDS", "Installation result received: status=$status, message=$message")
+            
+            when (status) {
+                android.content.pm.PackageInstaller.STATUS_SUCCESS -> {
+                    android.util.Log.i("GeekDS", "✅ Installation completed successfully!")
+                }
+                else -> {
+                    android.util.Log.w("GeekDS", "Installation status: $status - $message")
+                }
+            }
+        }
+    }
+    
+    /**
+     * Clear the update_requested flag on the server
+     */
+    private fun clearUpdateFlag() {
+        scope.launch(Dispatchers.IO) {
+            try {
+                val deviceId = this@MainActivity.deviceId ?: return@launch
+                
+                Log.i("GeekDS", "Clearing update_requested flag for device $deviceId")
+                
+                val url = "$cmsUrl/api/devices/$deviceId/clear-update-flag"
+                
+                val request = Request.Builder()
+                    .url(url)
+                    .post("{}".toRequestBody("application/json".toMediaType()))
+                    .build()
+                
+                client.newCall(request).execute().use { response ->
+                    if (response.isSuccessful) {
+                        Log.i("GeekDS", "✅ Update flag cleared successfully")
+                    } else {
+                        Log.w("GeekDS", "Failed to clear update flag: ${response.code}")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("GeekDS", "Error clearing update flag: ${e.message}", e)
+            }
         }
     }
 }
