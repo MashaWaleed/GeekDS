@@ -9,7 +9,7 @@ This solution is ideal for embedded systems, routers, SBCs, or internal automati
 ## ✨ Features
 
 - Runs using **BusyBox only** — no external web server stack required
-- **CGI execution** of shell scripts via `.s` file extension mapping
+- **CGI execution** of shell scripts via `.sh` file extension mapping
 - Accepts parameters via **URL query string**
 - Returns **Success / Failure** HTTP responses
 - Generates detailed logging files per request
@@ -33,7 +33,9 @@ Tested on **BusyBox v1.36+**
 ## 📁 Directory Structure
 
 www/
+
 ├── enroll.s # CGI script
+
 └── log/ # Auto-generated logs
 
 ---
@@ -41,7 +43,7 @@ www/
 ## Conf file
 
 ```
-.s:/bin/sh
+.sh:/bin/sh
 ```
 ---
 
