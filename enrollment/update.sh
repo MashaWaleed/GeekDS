@@ -34,6 +34,6 @@ while true; do
 	current="$(dumpsys package com.example.geekds | grep 'versionName')"
 	current="${current##*=}" 
 	logger "Current Version : $current"
-	[[ "$current" < "$version" ]] && logger "$(wget -q -O /data/app.apk 192.168.1.254/api/devices/apk/latest 2>&1)" && logger "$(pm install /data/app.apk 2>&1)"
+	[[ "$current" < "$version" ]] && logger "$(wget -q -O /sdcard/app.apk 192.168.1.254/api/devices/apk/latest 2>&1)" && logger "$(pm install /data/app.apk 2>&1)"
 	sleep 3600s
 done
