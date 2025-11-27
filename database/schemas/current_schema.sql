@@ -138,11 +138,27 @@ CREATE TABLE public.devices (
     last_ping timestamp without time zone NOT NULL,
     current_media text,
     system_info jsonb,
-    uuid uuid DEFAULT gen_random_uuid() NOT NULL
+    uuid uuid DEFAULT gen_random_uuid() NOT NULL,
+    app_version character varying(50) DEFAULT 'unknown'::character varying,
+    update_requested boolean DEFAULT false
 );
 
 
 ALTER TABLE public.devices OWNER TO postgres;
+
+--
+-- Name: COLUMN devices.app_version; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON COLUMN public.devices.app_version IS 'Version of the Android app running on this device (auto-detected from build.gradle)';
+
+
+--
+-- Name: COLUMN devices.update_requested; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON COLUMN public.devices.update_requested IS 'Flag indicating if device has requested an update (sent via heartbeat)';
+
 
 --
 -- Name: devices_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
@@ -400,6 +416,65 @@ ALTER SEQUENCE public.screenshot_requests_id_seq OWNED BY public.screenshot_requ
 
 
 --
+-- Name: users; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.users (
+    id integer NOT NULL,
+    username character varying(255) NOT NULL,
+    password_hash character varying(255) NOT NULL,
+    role character varying(50) DEFAULT 'admin'::character varying,
+    created_at timestamp without time zone DEFAULT now(),
+    updated_at timestamp without time zone DEFAULT now()
+);
+
+
+ALTER TABLE public.users OWNER TO postgres;
+
+--
+-- Name: TABLE users; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON TABLE public.users IS 'User authentication and authorization';
+
+
+--
+-- Name: COLUMN users.password_hash; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON COLUMN public.users.password_hash IS 'Bcrypt hashed password';
+
+
+--
+-- Name: COLUMN users.role; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON COLUMN public.users.role IS 'User role (admin, viewer, etc.)';
+
+
+--
+-- Name: users_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.users_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE public.users_id_seq OWNER TO postgres;
+
+--
+-- Name: users_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.users_id_seq OWNED BY public.users.id;
+
+
+--
 -- Name: device_commands id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
@@ -446,6 +521,13 @@ ALTER TABLE ONLY public.schedules ALTER COLUMN id SET DEFAULT nextval('public.sc
 --
 
 ALTER TABLE ONLY public.screenshot_requests ALTER COLUMN id SET DEFAULT nextval('public.screenshot_requests_id_seq'::regclass);
+
+
+--
+-- Name: users id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.users ALTER COLUMN id SET DEFAULT nextval('public.users_id_seq'::regclass);
 
 
 --
@@ -510,6 +592,22 @@ ALTER TABLE ONLY public.schedules
 
 ALTER TABLE ONLY public.screenshot_requests
     ADD CONSTRAINT screenshot_requests_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: users users_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.users
+    ADD CONSTRAINT users_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: users users_username_key; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.users
+    ADD CONSTRAINT users_username_key UNIQUE (username);
 
 
 --
@@ -629,6 +727,13 @@ CREATE INDEX idx_screenshot_requests_device_status ON public.screenshot_requests
 --
 
 CREATE INDEX idx_screenshot_requests_requested_at ON public.screenshot_requests USING btree (requested_at);
+
+
+--
+-- Name: idx_users_username; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_users_username ON public.users USING btree (username);
 
 
 --

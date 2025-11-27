@@ -85,8 +85,9 @@ function MediaManager() {
     setLoading(true);
     Promise.all([
       api('/api/media').then(res => res.json()),
-      api('/api/folders?type=media').then(res => res.json()).catch(() => [])
-    ]).then(([mediaData, foldersData]) => {
+      api('/api/folders?type=media').then(res => res.json()).catch(() => []),
+      api('/api/folders?type=playlist').then(res => res.json()).catch(() => []) // Fetch playlist folders too for sync
+    ]).then(([mediaData, foldersData, playlistFoldersData]) => {
       setMedia(mediaData);
       setFolders(foldersData);
       setLoading(false);
@@ -207,7 +208,8 @@ function MediaManager() {
         body: JSON.stringify({
           name: folderName.trim(),
           type: 'media',
-          parent_id: currentFolder
+          parent_id: currentFolder,
+          createBoth: true
         }),
       });
       
@@ -244,9 +246,9 @@ function MediaManager() {
   };
 
   const handleDeleteFolder = async (folder) => {
-    if (window.confirm(`Are you sure you want to delete the folder "${folder.name}"? This will move all contained media to the root level.`)) {
+    if (window.confirm(`Are you sure you want to delete the folder "${folder.name}"? This will also delete the corresponding folder in Playlists.`)) {
       try {
-        await api(`/api/folders/${folder.id}`, { method: 'DELETE' });
+        await api(`/api/folders/${folder.id}?deleteCorresponding=true`, { method: 'DELETE' });
         fetchMedia();
         if (selectedFolder === folder.id.toString()) {
           setSelectedFolder('');

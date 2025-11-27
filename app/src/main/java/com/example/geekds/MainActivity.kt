@@ -720,6 +720,22 @@ class MainActivity : Activity() {
             put("ip", ip)
             put("uuid", deviceUuid ?: "")
             put("app_version", appVersion) // Send app version to backend
+            
+            // Include current playing media filename and position for server-side screenshots
+            val currentPlayer = player
+            if (currentPlayer != null && isPlaylistActive) {
+                val currentMediaItem = currentPlayer.currentMediaItem
+                if (currentMediaItem != null) {
+                    val mediaUri = currentMediaItem.localConfiguration?.uri
+                    if (mediaUri != null) {
+                        val mediaFilename = mediaUri.path?.substringAfterLast('/') ?: ""
+                        if (mediaFilename.isNotEmpty()) {
+                            put("current_media", mediaFilename)
+                            put("current_position_ms", currentPlayer.currentPosition)
+                        }
+                    }
+                }
+            }
         }
         val req = Request.Builder()
             .url("$cmsUrl/api/devices/$id/heartbeat")

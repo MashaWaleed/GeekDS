@@ -396,7 +396,9 @@ router.patch('/:id/heartbeat', async (req, res) => {
     name,
     ip,
     uuid,
-    app_version
+    app_version,
+    current_media,
+    current_position_ms
     // NOTE: update_requested is NOT accepted from client - it's server-controlled only
   } = req.body || {};
 
@@ -535,8 +537,17 @@ router.patch('/:id/heartbeat', async (req, res) => {
     }
 
     // Queue the ping update for batch processing (instead of immediate UPDATE)
-    const currentMediaStatus = playback_state === 'playing' && activePlaylistName ? activePlaylistName : (playback_state || 'standby');
+    // Use the actual media filename from client if provided, otherwise fall back to playlist name
+    const currentMediaStatus = current_media || (playback_state === 'playing' && activePlaylistName ? activePlaylistName : (playback_state || 'standby'));
     pendingPingUpdates.set(id, { current_media: currentMediaStatus, timestamp: Date.now() });
+
+    // Store current position in system_info for screenshot generation
+    if (current_position_ms !== undefined) {
+      await pool.query(
+        'UPDATE devices SET system_info = jsonb_set(COALESCE(system_info, \'{}\'), \'{current_position_ms}\', $1::text::jsonb) WHERE id = $2',
+        [current_position_ms, id]
+      );
+    }
 
     // Update metadata fields immediately if provided (ignore name to prevent overwrite)
     // NOTE: update_requested is NEVER updated from client - it's server-controlled only
@@ -672,15 +683,16 @@ router.get('/:id/schedule', async (req, res) => {
   });
 });
 
-// NEW: Request screenshot from device (HTTP polling approach with completion waiting)
+// NEW: Request screenshot (server-side generation from current_media)
 router.post('/:id/screenshot', async (req, res) => {
   const { id } = req.params;
-  const timeout = 60000; // 60 seconds timeout (increased for slow MediaMetadataRetriever)
 
   try {
-    // Check if device exists and is online
+    const { spawn } = require('child_process');
+    
+    // Get device info and current media
     const deviceResult = await pool.query(
-      'SELECT id, name, status FROM devices WHERE id = $1',
+      'SELECT id, name, status, current_media, system_info FROM devices WHERE id = $1',
       [id]
     );
 
@@ -689,68 +701,138 @@ router.post('/:id/screenshot', async (req, res) => {
     }
 
     const device = deviceResult.rows[0];
+    const currentPositionMs = device.system_info?.current_position_ms || 0;
     
     if (device.status !== 'online') {
       return res.status(400).json({ error: 'Device is offline' });
     }
 
-    // Create a screenshot request record in database
-    const requestResult = await pool.query(
-      'INSERT INTO screenshot_requests (device_id, requested_at, status) VALUES ($1, NOW(), $2) RETURNING id',
-      [id, 'pending']
-    );
-
-    const requestId = requestResult.rows[0].id;
-    console.log(`Screenshot request queued for device ${device.name} (ID: ${id}), request ID: ${requestId}`);
-    
-    // Wait for screenshot completion with timeout
-    const startTime = Date.now();
-    
-    while (Date.now() - startTime < timeout) {
-      // Check if screenshot was completed
-      const statusResult = await pool.query(
-        'SELECT status, screenshot_filename, error_message FROM screenshot_requests WHERE id = $1',
-        [requestId]
-      );
-
-      if (statusResult.rows.length > 0) {
-        const request = statusResult.rows[0];
+    // If standby, copy standby image to screenshots folder and return JSON
+    if (!device.current_media || device.current_media === 'standby') {
+      const standbyImagePath = path.join(__dirname, '..', 'enrollment', 'standby_image.png');
+      if (fs.existsSync(standbyImagePath)) {
+        const timestamp = Date.now();
+        const screenshotFilename = `device_${id}_${timestamp}.png`;
+        const screenshotPath = path.join(screenshotsDir, screenshotFilename);
+        fs.copyFileSync(standbyImagePath, screenshotPath);
         
-        if (request.status === 'completed') {
-          return res.json({
-            message: 'Screenshot captured successfully',
-            device_id: id,
-            device_name: device.name,
-            screenshot_filename: request.screenshot_filename,
-            request_id: requestId
-          });
-        } else if (request.status === 'failed') {
-          return res.status(500).json({
-            error: 'Screenshot capture failed',
-            message: request.error_message || 'Unknown error'
-          });
-        }
+        await pool.query(
+          'INSERT INTO screenshot_requests (device_id, requested_at, status, completed_at, screenshot_filename) VALUES ($1, NOW(), $2, NOW(), $3)',
+          [id, 'completed', screenshotFilename]
+        );
+        
+        return res.json({
+          message: 'Screenshot captured (standby mode)',
+          device_id: id,
+          device_name: device.name,
+          screenshot_filename: screenshotFilename,
+          media_file: 'standby',
+          method: 'standby-image'
+        });
       }
-
-      // Wait 500ms before checking again
-      await new Promise(resolve => setTimeout(resolve, 500));
+      return res.status(400).json({ error: 'No media currently playing on device' });
     }
 
-    // Timeout reached - mark request as timeout
-    await pool.query(
-      'UPDATE screenshot_requests SET status = $1, error_message = $2 WHERE id = $3',
-      ['timeout', 'Request timed out', requestId]
+    // The current_media from heartbeat is the original filename
+    // We need to look up the saved_filename (hash) from the database
+    const mediaQuery = await pool.query(
+      'SELECT saved_filename FROM media_files WHERE filename = $1 LIMIT 1',
+      [device.current_media]
     );
 
-    return res.status(408).json({
-      error: 'Screenshot request timed out',
-      message: 'Device did not respond within 60 seconds',
-      request_id: requestId
+    if (mediaQuery.rows.length === 0) {
+      return res.status(404).json({ 
+        error: 'Media file not found in database', 
+        current_media: device.current_media,
+        hint: 'File may have been deleted or never uploaded'
+      });
+    }
+
+    const savedFilename = mediaQuery.rows[0].saved_filename;
+    const mediaPath = path.join(__dirname, '..', 'media', savedFilename);
+
+    if (!fs.existsSync(mediaPath)) {
+      return res.status(404).json({ 
+        error: 'Media file not found on disk', 
+        current_media: device.current_media,
+        saved_filename: savedFilename,
+        hint: 'Database record exists but file is missing'
+      });
+    }
+
+    console.log(`[Screenshot] Generating from media file: ${device.current_media} (${savedFilename}) for device ${device.name}`);
+
+    // Generate screenshot filename
+    const timestamp = Date.now();
+    const screenshotFilename = `device_${id}_${timestamp}.png`;
+    const screenshotPath = path.join(screenshotsDir, screenshotFilename);
+
+    // Use ffmpeg to extract frame at current playback position
+    const seekSeconds = Math.floor(currentPositionMs / 1000);
+    const hours = Math.floor(seekSeconds / 3600);
+    const minutes = Math.floor((seekSeconds % 3600) / 60);
+    const seconds = seekSeconds % 60;
+    const seekTime = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+    const ffmpegArgs = [
+      '-ss', seekTime,
+      '-i', mediaPath,
+      '-frames:v', '1',
+      '-q:v', '2',
+      '-y',
+      screenshotPath
+    ];
+
+    // Wrap ffmpeg execution in a Promise
+    await new Promise<void>((resolve, reject) => {
+      const ffmpeg = spawn('ffmpeg', ffmpegArgs);
+      let stderr = '';
+
+      ffmpeg.stderr.on('data', (data: Buffer) => {
+        stderr += data.toString();
+      });
+
+      ffmpeg.on('close', async (code: number | null) => {
+        if (code === 0 && fs.existsSync(screenshotPath)) {
+          console.log(`[Screenshot] Successfully generated: ${screenshotFilename}`);
+          
+          // Create screenshot request record for tracking
+          await pool.query(
+            'INSERT INTO screenshot_requests (device_id, requested_at, status, completed_at, screenshot_filename) VALUES ($1, NOW(), $2, NOW(), $3)',
+            [id, 'completed', screenshotFilename]
+          );
+
+          resolve();
+        } else {
+          console.error(`[Screenshot] ffmpeg failed with code ${code}: ${stderr}`);
+          
+          await pool.query(
+            'INSERT INTO screenshot_requests (device_id, requested_at, status, error_message) VALUES ($1, NOW(), $2, $3)',
+            [id, 'failed', `ffmpeg error: ${stderr.substring(0, 500)}`]
+          );
+
+          reject(new Error(`ffmpeg failed: ${stderr.substring(0, 200)}`));
+        }
+      });
+
+      ffmpeg.on('error', (err: Error) => {
+        reject(err);
+      });
+    });
+
+    // If we get here, screenshot was generated successfully
+    return res.json({
+      message: 'Screenshot generated successfully',
+      device_id: id,
+      device_name: device.name,
+      screenshot_filename: screenshotFilename,
+      media_file: device.current_media,
+      method: 'server-side-ffmpeg'
     });
 
   } catch (error) {
-    console.error('Error requesting screenshot:', error);
-    res.status(500).json({ error: 'Failed to request screenshot' });
+    console.error('Error generating screenshot:', error);
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    res.status(500).json({ error: 'Failed to generate screenshot', details: errorMessage });
   }
 });
 

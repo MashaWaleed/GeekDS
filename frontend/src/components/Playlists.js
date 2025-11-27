@@ -237,7 +237,8 @@ function Playlists() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: folderName.trim(),
-          type: 'playlist'
+          type: 'playlist',
+          createBoth: true
         }),
       });
       
@@ -253,9 +254,9 @@ function Playlists() {
   };
 
   const handleDeleteFolder = async (folder) => {
-    if (window.confirm(`Are you sure you want to delete the folder "${folder.name}"?`)) {
+    if (window.confirm(`Are you sure you want to delete the folder "${folder.name}"? This will also delete the corresponding folder in Media.`)) {
       try {
-        await api(`/api/folders/${folder.id}`, { method: 'DELETE' });
+        await api(`/api/folders/${folder.id}?deleteCorresponding=true`, { method: 'DELETE' });
         fetchPlaylists();
         if (selectedFolder === folder.id.toString()) {
           setSelectedFolder('');
@@ -507,10 +508,20 @@ function Playlists() {
                 <MenuItem value="none">No Folder</MenuItem>
                 {folders.map(folder => (
                   <MenuItem key={folder.id} value={folder.id.toString()}>
-                    <Box display="flex" alignItems="center">
+                    <Box display="flex" alignItems="center" sx={{ flexGrow: 1 }}>
                       <FolderIcon sx={{ mr: 1, fontSize: 16 }} />
                       {folder.name}
                     </Box>
+                    <IconButton
+                      size="small"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteFolder(folder);
+                      }}
+                      sx={{ mr: -1 }}
+                    >
+                      <DeleteIcon fontSize="small" />
+                    </IconButton>
                   </MenuItem>
                 ))}
               </Select>
