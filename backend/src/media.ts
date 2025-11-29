@@ -36,7 +36,8 @@ router.post('/', upload.single('file'), async (req, res) => {
     let duration = 0;
     try {
       if (mimetype.startsWith('video/') || mimetype.startsWith('audio/')) {
-        duration = await getVideoDurationInSeconds(file.path);
+        const durationSeconds = await getVideoDurationInSeconds(file.path);
+        duration = Math.round(durationSeconds); // Round to nearest integer
       }
     } catch (durationError) {
       console.error('Could not get media duration:', durationError);
