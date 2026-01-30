@@ -48,6 +48,22 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
+    // Check for duplicate schedule name for this device (if name provided)
+    if (name) {
+      const existingSchedule = await pool.query(
+        'SELECT id, name FROM schedules WHERE device_id = $1 AND name = $2',
+        [device_id, name]
+      );
+      
+      if (existingSchedule.rows.length > 0) {
+        return res.status(409).json({ 
+          error: 'A schedule with this name already exists for this device',
+          message: `Schedule "${name}" already exists for this device. Please choose a different name.`,
+          existing_id: existingSchedule.rows[0].id
+        });
+      }
+    }
+
     // Validate time slots (24h format "HH:mm")
     if (time_slot_start >= time_slot_end) {
       return res.status(400).json({ error: 'End time must be after start time' });

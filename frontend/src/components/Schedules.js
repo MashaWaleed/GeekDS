@@ -564,6 +564,13 @@ function Schedules() {
       });
 
       const responseData = await response.json();
+      
+      if (response.status === 409) {
+        // Duplicate name or overlap error
+        setApiError(responseData.message || responseData.error || 'A schedule with this name already exists or overlaps with an existing schedule.');
+        return;
+      }
+      
       if (!response.ok) {
         throw new Error(responseData.error || 'An unknown error occurred.');
       }

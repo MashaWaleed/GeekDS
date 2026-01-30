@@ -33,6 +33,24 @@ router.post('/', upload.single('file'), async (req, res) => {
     const { originalname, filename, mimetype, size } = file;
     const { folder_id } = req.body; // Get folder_id from form data
     
+    // Check for duplicate filename
+    const existingFile = await pool.query(
+      'SELECT id, filename FROM media_files WHERE filename = $1',
+      [originalname]
+    );
+    
+    if (existingFile.rows.length > 0) {
+      // Delete the uploaded file since we're rejecting it
+      if (fs.existsSync(file.path)) {
+        fs.unlinkSync(file.path);
+      }
+      return res.status(409).json({ 
+        error: 'A file with this name already exists',
+        message: `File "${originalname}" already exists in the media library. Please rename the file and try again.`,
+        existing_id: existingFile.rows[0].id
+      });
+    }
+    
     let duration = 0;
     try {
       if (mimetype.startsWith('video/') || mimetype.startsWith('audio/')) {

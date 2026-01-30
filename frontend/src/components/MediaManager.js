@@ -147,6 +147,14 @@ function MediaManager() {
           xhr.addEventListener('load', () => {
             if (xhr.status >= 200 && xhr.status < 300) {
               resolve();
+            } else if (xhr.status === 409) {
+              // Duplicate filename error
+              try {
+                const response = JSON.parse(xhr.responseText);
+                reject(new Error(response.message || 'A file with this name already exists. Please rename the file and try again.'));
+              } catch (e) {
+                reject(new Error('A file with this name already exists. Please rename the file and try again.'));
+              }
             } else {
               reject(new Error(`Upload failed with status ${xhr.status}`));
             }
@@ -174,6 +182,8 @@ function MediaManager() {
         });
       } catch (error) {
         console.error('Error uploading file:', file.name, error);
+        alert(`Failed to upload "${file.name}": ${error.message}`);
+        break; // Stop uploading remaining files
       }
     }
     

@@ -32,6 +32,20 @@ router.post('/', async (req, res) => {
   try {
     const { name, media_files, folder_id } = req.body;
     
+    // Check for duplicate playlist name
+    const existingPlaylist = await pool.query(
+      'SELECT id, name FROM playlists WHERE name = $1',
+      [name]
+    );
+    
+    if (existingPlaylist.rows.length > 0) {
+      return res.status(409).json({ 
+        error: 'A playlist with this name already exists',
+        message: `Playlist "${name}" already exists. Please choose a different name.`,
+        existing_id: existingPlaylist.rows[0].id
+      });
+    }
+    
     const playlistResult = await pool.query(
       'INSERT INTO playlists (name, folder_id, updated_at) VALUES ($1, $2, NOW()) RETURNING *', 
       [name, folder_id || null]
@@ -46,9 +60,12 @@ router.post('/', async (req, res) => {
         );
       }
     }
+    
     // Invalidate playlists and schedules caches (schedules join playlist fields and devices rely on playlist updates)
     await invalidateCache(CACHE_KEYS.PLAYLISTS + '*');
     await invalidateCache(CACHE_KEYS.SCHEDULES + '*');
+    await invalidateCache('device:*:schedule_cache');
+    
     res.status(201).json(playlist);
   } catch (error) {
     console.error('Error creating playlist:', error);
@@ -110,6 +127,11 @@ router.patch('/:id', async (req, res) => {
     // Invalidate playlists and schedules caches
     await invalidateCache(CACHE_KEYS.PLAYLISTS + '*');
     await invalidateCache(CACHE_KEYS.SCHEDULES + '*');
+    
+    // CRITICAL: Invalidate device-specific schedule caches
+    // When playlist content changes, devices using this playlist must be notified
+    await invalidateCache('device:*:schedule_cache');
+    
     res.json({ success: true });
   } catch (error) {
     console.error('Error updating playlist:', error);
@@ -121,9 +143,14 @@ router.patch('/:id', async (req, res) => {
 router.delete('/:id', async (req, res) => {
   const { id } = req.params;
   await pool.query('DELETE FROM playlists WHERE id = $1', [id]);
+  
   // Invalidate playlists and schedules caches
   await invalidateCache(CACHE_KEYS.PLAYLISTS + '*');
   await invalidateCache(CACHE_KEYS.SCHEDULES + '*');
+  
+  // CRITICAL: Invalidate device-specific schedule caches
+  await invalidateCache('device:*:schedule_cache');
+  
   res.json({ success: true });
 });
 

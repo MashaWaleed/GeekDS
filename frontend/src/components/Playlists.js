@@ -179,16 +179,27 @@ function Playlists() {
     const method = editingPlaylist ? 'PATCH' : 'POST';
     
     try {
-      await api(url, {
+      const response = await api(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(playlistData),
       });
       
+      if (response.status === 409) {
+        const errorData = await response.json();
+        alert(errorData.message || 'A playlist with this name already exists. Please choose a different name.');
+        return;
+      }
+      
+      if (!response.ok) {
+        throw new Error('Failed to save playlist');
+      }
+      
       handleCloseDialog();
       fetchPlaylists();
     } catch (error) {
       console.error('Error saving playlist:', error);
+      alert('Error saving playlist: ' + error.message);
     }
   };
   
