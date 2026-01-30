@@ -10,8 +10,8 @@ services:
       POSTGRES_MAX_CONNECTIONS: 200
     volumes:
       - db_data:/var/lib/postgresql/data
-      - ./cms_schema.sql:/docker-entrypoint-initdb.d/01-cms_schema.sql:ro
-      - ./add_folders.sql:/docker-entrypoint-initdb.d/02-add_folders.sql:ro
+      - ./database/schemas/current_schema.sql:/docker-entrypoint-initdb.d/01-cms_schema.sql:ro
+      - ./database/migrations:/docker-entrypoint-initdb.d/migrations:ro
     ports:
       - "5432:5432"
     healthcheck:
