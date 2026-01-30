@@ -11,7 +11,7 @@ logger(){
 	log -t 'GeekUpdater' "$1"
 }
 while true; do
-	response="$(busybox wget -q -O - 192.168.1.11:5000/api/devices/apk/version)"
+	response="$(busybox wget -q -O - 192.168.1.254:5000/api/devices/apk/version)"
 	del=$'\n\t{}'
 	response="${response//[$del]/}" #del newlines, tabs and { , }
 	response="${response//  / }" #squeeze all spaces
@@ -34,6 +34,6 @@ while true; do
 	current="$(dumpsys package com.example.geekds | grep 'versionName')"
 	current="${current##*=}" 
 	logger "Current Version : $current"
-	[[ "$current" < "$version" ]] && logger "$(busybox wget -q -O /sdcard/app.apk 192.168.1.11:5000/api/devices/apk/latest 2>&1)" && logger "$(pm install -r -g /sdcard/app.apk 2>&1)"
+	[[ "$current" < "$version" ]] && logger "$(busybox wget -q -O /sdcard/app.apk 192.168.1.254:5000/api/devices/apk/latest 2>&1)" && logger "$(pm install -r -g /sdcard/app.apk 2>&1)"
 	sleep 60s
 done
