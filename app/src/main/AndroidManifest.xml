@@ -19,6 +19,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.READ_FRAME_BUFFER" />
 
+    <!-- Orientation/rotation control -->
+    <uses-permission android:name="android.permission.WRITE_SETTINGS" />
+
     <!-- Network and power management permissions -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
@@ -26,11 +29,11 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.DISABLE_KEYGUARD" />
-    
+
     <!-- Auto-start permissions -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.START_FOREGROUND_SERVICES_FROM_BACKGROUND" />
-    
+
     <!-- Kiosk mode permissions -->
     <uses-permission android:name="android.permission.REORDER_TASKS" />
     <uses-permission android:name="android.permission.GET_TASKS" />
@@ -54,7 +57,6 @@
         <activity android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTask"
-            android:screenOrientation="landscape"
             android:keepScreenOn="true"
             android:configChanges="orientation|screenSize|keyboardHidden">
             <intent-filter>
@@ -88,7 +90,7 @@
             android:exported="false"
             android:foregroundServiceType="specialUse">
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                      android:value="monitoring" />
+                android:value="monitoring" />
         </service>
 
         <!-- Install result receiver for silent updates -->
