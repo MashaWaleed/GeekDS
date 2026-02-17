@@ -805,7 +805,7 @@ class MainActivity : Activity() {
                         saveDeviceName(serverDeviceName)
                     }
 
-                    // DO NOT update currentPlaylistId here! 
+                    // DO NOT update currentPlaylistId here!
                     // That variable should ONLY be set by enforceScheduleWithMultiple() when actually starting playback.
                     // The heartbeat just detects changes - the enforcement loop handles the actual playback switching.
                     if (activePlaylistId <= 0) {
@@ -842,13 +842,13 @@ class MainActivity : Activity() {
 
                     // Detect implicit schedule clear (server returns version 0) even if schedule_changed false
                     val implicitScheduleCleared = (lastKnownScheduleVersion == 0L && scheduleChanged.not() && currentPlaylistId == null)
-                    
+
                     // Handle schedule changes
                     if (scheduleChanged || implicitScheduleCleared) {
                         // Only fetch schedule if server thinks something changed OR we saw a clear
                         fetchDeviceSchedule()
                     }
-                    
+
                     // Handle playlist content changes (independent of schedule changes)
                     // CRITICAL: This must run even if scheduleChanged is true!
                     if (playlistChanged && currentPlaylistId != null) {
@@ -1983,7 +1983,7 @@ class MainActivity : Activity() {
                         // Move temp file to final location
                         val renameSuccess = tempFile.renameTo(file)
                         Log.d("GeekDS", "Rename result for $storageFilename: $renameSuccess (temp=${tempFile.absolutePath}, final=${file.absolutePath})")
-                        
+
                         if (renameSuccess) {
                             Log.i("GeekDS", "Download completed: $storageFilename (${totalBytes} bytes)")
 
@@ -1992,7 +1992,7 @@ class MainActivity : Activity() {
                             val finalSize = file.length()
                             val finalReadable = file.canRead()
                             Log.d("GeekDS", "Verification: exists=$finalExists, size=$finalSize (expected=$totalBytes), readable=$finalReadable")
-                            
+
                             if (finalExists && finalSize == totalBytes && finalReadable) {
                                 activeDownloads.remove(storageFilename)
                                 callback(true)
@@ -2265,7 +2265,7 @@ class MainActivity : Activity() {
         // DEBUG: Log all schedules
         schedules.forEachIndexed { index, sched ->
             Log.d("GeekDS", "Schedule[$index]: '${sched.name}' playlist=${sched.playlistId}")
-            
+
             // Load and display playlist content
             val playlistContent = loadPlaylistById(this, sched.playlistId)
             if (playlistContent != null && playlistContent.mediaFiles.isNotEmpty()) {
@@ -2273,7 +2273,7 @@ class MainActivity : Activity() {
             } else {
                 Log.d("GeekDS", "  Playlist content: (not cached or empty)")
             }
-            
+
             Log.d("GeekDS", "  Days: ${sched.daysOfWeek.joinToString(",")}")
             Log.d("GeekDS", "  Time: ${sched.timeSlotStart}-${sched.timeSlotEnd}")
             Log.d("GeekDS", "  Valid: ${sched.validFrom} to ${sched.validUntil}")
