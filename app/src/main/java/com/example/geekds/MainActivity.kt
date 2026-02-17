@@ -732,9 +732,12 @@ class MainActivity : Activity() {
                 if (currentMediaItem != null) {
                     val mediaUri = currentMediaItem.localConfiguration?.uri
                     if (mediaUri != null) {
-                        val mediaFilename = mediaUri.path?.substringAfterLast('/') ?: ""
-                        if (mediaFilename.isNotEmpty()) {
-                            put("current_media", mediaFilename)
+                        val storageFilename = mediaUri.path?.substringAfterLast('/') ?: ""
+                        if (storageFilename.isNotEmpty()) {
+                            // Strip the ID prefix (format: "7-sara-1.mp4" -> "sara-1.mp4")
+                            // Files are stored as {id}-{originalFilename}, server expects originalFilename
+                            val originalFilename = storageFilename.replaceFirst(Regex("^\\d+-"), "")
+                            put("current_media", originalFilename)
                             put("current_position_ms", currentPlayer.currentPosition)
                         }
                     }
